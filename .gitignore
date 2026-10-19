@@ -19,3 +19,7 @@ docs/
 corpus/
 crytic-export/
 slither_results.json
+
+# Deploy keys (never commit)
+.deploy-keys/
+logs/

@@ -1,0 +1,11 @@
+# verify.yaml with a deeper loop bound, for properties on the full Drips deployment: the ABI
+# decoders and _calcMaxEnd repeat the same jumps more than 15 times on one path.
+testMode: verification
+format: text
+symExec: true
+symExecMaxIters: 200
+symExecMaxExplore: 50
+symExecNSolvers: 5
+symExecTimeout: 120
+symExecAbstractArith: false
+maxTimeDelay: 400000

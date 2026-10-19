@@ -1,0 +1,11 @@
+# verify.yaml with abstract arithmetic (div/mod as uninterpreted functions plus lemmas), for
+# properties with nonlinear div/mod, or that write storage under a symbolic key.
+testMode: verification
+format: text
+symExec: true
+symExecMaxIters: 15
+symExecMaxExplore: 50
+symExecNSolvers: 5
+symExecTimeout: 120
+symExecAbstractArith: true
+maxTimeDelay: 400000
