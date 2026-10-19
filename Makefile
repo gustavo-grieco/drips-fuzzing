@@ -82,9 +82,9 @@ VERIFY := \
 	prove_squeeze_vmstore:ProveSqueezeVmStore:verify \
 	prove_real_squeeze_accounting:ProveRealSqueeze:verify \
 	prove_real_no_pre_update:ProveRealSqueeze:verify \
-	prove_accounting_give:ProveAccounting:verify \
-	prove_accounting_split:ProveAccounting:verify \
-	prove_accounting_collect:ProveAccounting:verify \
+	prove_accounting_give:ProveAccounting:verify-z3 \
+	prove_accounting_split:ProveAccounting:verify-z3 \
+	prove_accounting_collect:ProveAccounting:verify-z3 \
 	prove_accounting_stream_balance:ProveAccounting:verify \
 	prove_accounting_receive:ProveAccounting:verify \
 	prove_accounting_squeeze:ProveAccounting:verify-arith \
@@ -97,10 +97,12 @@ LONG_QUERIES := prove_view_eq_actual_symacct prove_deposit_exact_symacct prove_a
 FEW_SOLVERS := prove_conservation_3sym prove_receivers_sum_3sym
 
 # hevm flags for each config, matching the yaml and the hevm settings echidna uses internally
-# (max width 5, max depth = symExecMaxExplore, 2^12-byte buffers, only deployed addresses)
-HEVM_verify       := --max-iterations 15
-HEVM_verify-arith := --max-iterations 15 --abstract-arith
-HEVM_FLAGS := --solver bitwuzla --max-buf-size 12 --max-width 5 --max-depth 50 --only-deployed \
+# (max width 5, max depth = symExecMaxExplore, 2^12-byte buffers, only deployed addresses).
+# Needs hevm 0.58 or later, where abstract arithmetic is on unless --no-abstract-arith.
+HEVM_verify       := --solver bitwuzla --max-iterations 15 --no-abstract-arith
+HEVM_verify-arith := --solver bitwuzla --max-iterations 15
+HEVM_verify-z3    := --solver z3 --max-iterations 15
+HEVM_FLAGS := --max-buf-size 12 --max-width 5 --max-depth 50 --only-deployed \
 	--loop-detection-heuristic StackBased
 
 entry = $(filter $(1):%,$(VERIFY))

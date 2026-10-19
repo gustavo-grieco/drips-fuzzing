@@ -1,0 +1,11 @@
+# verify-arith.yaml with z3 instead of bitwuzla, for the accounting proofs: bitwuzla times out on
+# their packed-balance queries, which z3 decides in seconds.
+testMode: verification
+format: text
+symExec: true
+symExecMaxIters: 15
+symExecMaxExplore: 50
+symExecNSolvers: 5
+symExecTimeout: 120
+symExecAbstractArith: true
+symExecSMTSolver: z3

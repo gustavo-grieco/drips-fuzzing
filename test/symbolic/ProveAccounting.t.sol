@@ -13,25 +13,29 @@ import {
 } from "openzeppelin-contracts/token/ERC20/presets/ERC20PresetFixedSupply.sol";
 
 /*
-    invariantAccountingVsTokenBalance (EchidnaInvariantTests), split into the two layers it checks
-    and proved one entrypoint at a time:
+    invariantAccountingVsTokenBalance (EchidnaInvariantTests), proved inductively, one entrypoint
+    at a time. The invariant has two layers:
 
-      (1) tokens vs Drips totals:     token.balanceOf(drips) == streams + splits   (Drips.balances)
-      (2) Drips totals vs accounts:   splits  == sum of splittable + collectable
-                                      streams == sum of stream balances, as long as nothing has
-                                                 streamed yet; receive and squeeze move exactly the
-                                                 received amount from streams to splits
+      (1) tokens vs Drips totals:   token.balanceOf(drips) == streams + splits   (Drips.balances)
+      (2) totals vs accounts:       splits  == sum over all accounts of splittable + collectable
+                                    streams == sum of stream balances + receivable + squeezable
+
+    Each property starts from a symbolic state that satisfies the invariant, written with vm.store:
+    symbolic totals S and P with token.balanceOf(drips) == S + P <= MAX_TOTAL_BALANCE, a symbolic
+    token balance for the user, and symbolic balances for every account the entrypoint touches plus
+    one bystander account. All other accounts are folded into the rest, R = P - (touched + bystander)
+    >= 0 (and S - stream balance >= 0 for setStreams). It then calls the entrypoint and checks that
+    (1) still holds, that R is unchanged (so (2) still holds for whatever R stood for), and that the
+    bystander did not change.
 
     Only the driver moves tokens (transfer in before give/setStreams, Drips.withdraw after collect
-    or a negative setStreams), so layer (1) holds iff every driver entrypoint moves the token
-    balance and the Drips totals by the same amount. AccountingDriver calls the production
-    DriverTransferUtils functions that AddressDriver uses, so the token movements are the real ones.
+    or a negative setStreams). AccountingDriver calls the production DriverTransferUtils functions
+    that AddressDriver uses, so the token movements are the real ones.
 
-    Each property starts from an empty deployment and asserts both layers after every step. With
-    only the accounts the property touches holding anything, the sums in (2) are over those
-    accounts. Not covered: the streams side of (2) while time passes (sender balance drained vs
-    receivable + squeezable), which is the continuous vs cycle-quantized question of
-    testBalanceAtInFuture.
+    Scope: the stream configurations used by receive and squeeze are concrete (one stream started
+    inside the property), so for those two only the balances are symbolic. The streams side of (2)
+    while time passes (sender balance drained vs receivable + squeezable) is not covered; it is the
+    continuous vs cycle-quantized question of testBalanceAtInFuture.
 */
 contract AccountingDriver is DriverTransferUtils {
     DripsEchidna public immutable drips;
@@ -86,40 +90,87 @@ contract ProveAccounting is EchidnaStart, Test {
     uint160 constant RATE = 1e9; // 1 token per second
     uint128 constant DEPOSIT = 10_000_000_000; // the stream stays active for the whole window
 
+    // Managed._erc1967Slot: keccak256(name) - 1024
+    uint256 constant DRIPS_SLOT = uint256(keccak256("eip1967.drips.storage")) - 1024;
+    uint256 constant SPLITS_SLOT = uint256(keccak256("eip1967.splits.storage")) - 1024;
+    uint256 constant STREAMS_SLOT = uint256(keccak256("eip1967.streams.storage")) - 1024;
+
     ERC20PresetFixedSupply token;
     DripsEchidna drips;
     AccountingDriver driver;
-    uint256 me; // this contract's account, the one that gives, splits, streams and collects
-    uint256 other; // a second account, splits and stream receiver
+    uint256 me; // this contract's account: gives, splits, streams and collects
+    uint256 other; // splits and stream receiver
+    uint256 bystander; // holds balances, must not be touched
 
     function setUp() public {
-        token = new ERC20PresetFixedSupply("Test", "TEST", type(uint128).max, address(this));
+        // supply far above any balance the properties store, so OZ's unchecked balance additions
+        // cannot wrap
+        token = new ERC20PresetFixedSupply("Test", "TEST", 2 ** 255, address(this));
         drips = new DripsEchidna(CYCLE);
         drips.unpause_noModifiers();
         driver = new AccountingDriver(drips);
         token.approve(address(driver), type(uint256).max);
         me = driver.accountId(address(this));
         other = driver.accountId(address(0xB0B));
+        bystander = driver.accountId(address(0xCAFE));
     }
+
+    // ---- symbolic valid state ----
+
+    // Drips totals S (streams) and P (splits), backed by exactly S + P tokens: layer (1)
+    function _totals(uint128 streams, uint128 splits) internal {
+        require(uint256(streams) + splits <= drips.MAX_TOTAL_BALANCE());
+        bytes32 slot = keccak256(abi.encode(address(token), DRIPS_SLOT + 2)); // balances[token]
+        vm.store(address(drips), slot, bytes32(uint256(streams) | (uint256(splits) << 128)));
+        _tokenBalance(address(drips), uint256(streams) + splits);
+    }
+
+    function _tokenBalance(address holder, uint256 amt) internal {
+        vm.store(address(token), keccak256(abi.encode(holder, uint256(0))), bytes32(amt)); // _balances
+    }
+
+    // splitsStates[acc].balances[token] = (splittable, collectable)
+    function _splitsBalance(uint256 acc, uint128 splittable, uint128 collectable) internal {
+        bytes32 state = keccak256(abi.encode(acc, SPLITS_SLOT));
+        bytes32 slot = keccak256(abi.encode(address(token), uint256(state) + 1));
+        vm.store(address(drips), slot, bytes32(uint256(splittable) | (uint256(collectable) << 128)));
+    }
+
+    // states[token][acc] with no receivers: only the balance (bits 96..223 of the packed word at
+    // +3) and updateTime (bits 32..63) matter
+    function _streamBalance(uint256 acc, uint128 balance) internal {
+        bytes32 byToken = keccak256(abi.encode(address(token), STREAMS_SLOT));
+        uint256 slot = uint256(keccak256(abi.encode(acc, byToken))) + 3;
+        vm.store(
+            address(drips),
+            bytes32(slot),
+            bytes32((uint256(START_TIMESTAMP) << 32) | (uint256(balance) << 96))
+        );
+    }
+
+    function _held(uint256 acc) internal view returns (uint256) {
+        return uint256(drips.splittable(acc, token)) + drips.collectable(acc, token);
+    }
+
+    // ---- invariant checks ----
 
     // layer (1)
     function _assertTokensMatchTotals() internal view {
         (uint128 streams, uint128 splits) = drips.balances(token);
-        assert(token.balanceOf(address(drips)) == uint256(streams) + uint256(splits));
+        assert(token.balanceOf(address(drips)) == uint256(streams) + splits);
     }
 
-    // layer (2), splits side, over the two accounts that can hold anything
-    function _assertSplitsMatchAccounts() internal view {
+    // layer (2), splits side: P is still the unchanged rest plus what the listed accounts hold.
+    // Written as a sum, so a broken invariant fails the assertion instead of reverting (a revert
+    // counts as a pass).
+    function _assertSplitsRest(uint256 rest, uint256 heldByListed) internal view {
         (, uint128 splits) = drips.balances(token);
-        uint256 held = uint256(drips.splittable(me, token)) + drips.collectable(me, token)
-            + drips.splittable(other, token) + drips.collectable(other, token);
-        assert(splits == held);
+        assert(splits == rest + heldByListed);
     }
 
-    // layer (2), streams side, while nothing has streamed yet (no receivers, or time not moved)
-    function _assertStreamsMatchBalance(StreamReceiver[] memory receivers) internal view {
-        (uint128 streams,) = drips.balances(token);
-        assert(streams == drips.balanceAt(me, token, receivers, uint32(block.timestamp)));
+    function _assertBystander(uint128 splittable, uint128 collectable) internal view {
+        assert(drips.splittable(bystander, token) == splittable);
+        assert(drips.collectable(bystander, token) == collectable);
     }
 
     function _oneReceiver(uint32 weight) internal view returns (SplitsReceiver[] memory r) {
@@ -132,104 +183,191 @@ contract ProveAccounting is EchidnaStart, Test {
         r[0] = StreamReceiver(other, StreamConfigImpl.create(0, RATE, 0, 0));
     }
 
-    // give: tokens come in, the receiver's splittable and the splits total rise by amt
-    function prove_accounting_give(uint128 amt) public {
-        uint256 userBefore = token.balanceOf(address(this));
+    // ---- entrypoints ----
+
+    // give: amt tokens come in, the receiver's splittable and P rise by amt
+    function prove_accounting_give(
+        uint128 streams,
+        uint128 splits,
+        uint128 user,
+        uint128 otherSplittable,
+        uint128 otherCollectable,
+        uint128 bySplittable,
+        uint128 byCollectable,
+        uint128 amt
+    ) public {
+        _totals(streams, splits);
+        _tokenBalance(address(this), user);
+        _splitsBalance(other, otherSplittable, otherCollectable);
+        _splitsBalance(bystander, bySplittable, byCollectable);
+        uint256 held = uint256(otherSplittable) + otherCollectable + bySplittable + byCollectable;
+        require(held <= splits);
+
         driver.give(other, token, amt);
+
         _assertTokensMatchTotals();
-        _assertSplitsMatchAccounts();
-        assert(drips.splittable(other, token) == amt);
-        assert(token.balanceOf(address(this)) == userBefore - amt);
+        _assertSplitsRest(splits - held, _held(other) + _held(bystander));
+        assert(drips.splittable(other, token) == uint256(otherSplittable) + amt);
+        assert(token.balanceOf(address(this)) + amt == user);
+        _assertBystander(bySplittable, byCollectable);
     }
 
-    // Split into two properties to keep the number of calls into Drips on one path below
-    // symExecMaxIters: the loop heuristic counts each repeated call dispatch as a loop iteration.
-
-    // give to self -> split (any single-receiver weight): no tokens move, splittable becomes
-    // collectable + the receiver's splittable
-    function prove_accounting_split(uint128 amt, uint32 weight) public {
+    // split, any single-receiver weight: no tokens move; my splittable becomes my collectable plus
+    // the receiver's splittable
+    function prove_accounting_split(
+        uint128 streams,
+        uint128 splits,
+        uint128 mySplittable,
+        uint128 myCollectable,
+        uint128 otherSplittable,
+        uint128 otherCollectable,
+        uint128 bySplittable,
+        uint128 byCollectable,
+        uint32 weight
+    ) public {
         require(weight >= 1 && weight <= 1_000_000);
+        _totals(streams, splits);
+        _splitsBalance(me, mySplittable, myCollectable);
+        _splitsBalance(other, otherSplittable, otherCollectable);
+        _splitsBalance(bystander, bySplittable, byCollectable);
+        uint256 held = uint256(mySplittable) + myCollectable + otherSplittable + otherCollectable
+            + bySplittable + byCollectable;
+        require(held <= splits);
         driver.setSplits(_oneReceiver(weight));
-        driver.give(me, token, amt);
+
         drips.split(me, token, _oneReceiver(weight));
+
         _assertTokensMatchTotals();
-        _assertSplitsMatchAccounts();
+        _assertSplitsRest(splits - held, _held(me) + _held(other) + _held(bystander));
+        assert(drips.splittable(me, token) == 0);
+        _assertBystander(bySplittable, byCollectable);
     }
 
-    // give to self -> split -> collect: the whole collectable amount leaves Drips to the user
-    function prove_accounting_collect(uint128 amt, uint32 weight) public {
-        require(weight >= 1 && weight <= 1_000_000);
-        driver.setSplits(_oneReceiver(weight));
-        driver.give(me, token, amt);
-        drips.split(me, token, _oneReceiver(weight));
-        uint128 collectable = drips.collectable(me, token);
-        uint256 userBefore = token.balanceOf(address(this));
+    // collect: my whole collectable amount leaves Drips to the user, P drops by it
+    function prove_accounting_collect(
+        uint128 streams,
+        uint128 splits,
+        uint128 user,
+        uint128 mySplittable,
+        uint128 myCollectable,
+        uint128 bySplittable,
+        uint128 byCollectable
+    ) public {
+        _totals(streams, splits);
+        _tokenBalance(address(this), user);
+        _splitsBalance(me, mySplittable, myCollectable);
+        _splitsBalance(bystander, bySplittable, byCollectable);
+        uint256 held = uint256(mySplittable) + myCollectable + bySplittable + byCollectable;
+        require(held <= splits);
+
         uint128 collected = driver.collect(token, address(this));
+
         _assertTokensMatchTotals();
-        _assertSplitsMatchAccounts();
-        assert(collected == collectable);
-        assert(token.balanceOf(address(this)) == userBefore + collected);
+        _assertSplitsRest(splits - held, _held(me) + _held(bystander));
+        assert(collected == myCollectable);
+        assert(drips.collectable(me, token) == 0);
+        assert(token.balanceOf(address(this)) == uint256(user) + collected);
+        _assertBystander(bySplittable, byCollectable);
     }
 
-    // setStreams with no receivers: deposit, then change the balance by any delta (withdrawals are
-    // capped at the balance and sent back by Drips.withdraw)
-    function prove_accounting_stream_balance(uint128 deposit, int128 delta) public {
-        require(deposit <= uint128(type(int128).max));
+    // setStreams with no receivers, from any stream balance, by any delta (withdrawals are capped
+    // at the balance and sent back by Drips.withdraw): S moves with my stream balance
+    function prove_accounting_stream_balance(
+        uint128 streams,
+        uint128 splits,
+        uint128 user,
+        uint128 myBalance,
+        int128 delta
+    ) public {
+        _totals(streams, splits);
+        _tokenBalance(address(this), user);
+        _streamBalance(me, myBalance);
+        require(myBalance <= streams);
         StreamReceiver[] memory none = new StreamReceiver[](0);
-        driver.setStreams(token, none, int128(deposit), none, 0, 0, address(this));
-        _assertTokensMatchTotals();
-        _assertStreamsMatchBalance(none);
 
-        uint256 userBefore = token.balanceOf(address(this));
         int128 real = driver.setStreams(token, none, delta, none, 0, 0, address(this));
+
         _assertTokensMatchTotals();
-        _assertStreamsMatchBalance(none);
-        assert(int256(token.balanceOf(address(this))) == int256(userBefore) - real);
+        (uint128 streamsAfter,) = drips.balances(token);
+        uint128 balanceAfter = drips.balanceAt(me, token, none, uint32(block.timestamp));
+        assert(streamsAfter == uint256(streams - myBalance) + balanceAfter);
+        assert(int256(uint256(balanceAfter)) == int256(uint256(myBalance)) + real);
+        assert(int256(token.balanceOf(address(this))) == int256(uint256(user)) - real);
     }
 
+    // a concrete stream me -> other, started now; S rises by DEPOSIT
     function _startStream() internal {
         StreamReceiver[] memory none = new StreamReceiver[](0);
         driver.setStreams(token, none, int128(DEPOSIT), _stream(), 0, 0, address(this));
-        _assertTokensMatchTotals();
-        _assertStreamsMatchBalance(_stream());
     }
 
-    // receiveStreams at any time within one cycle length: streams -> splits by exactly the received
-    // amount, no tokens move
-    function prove_accounting_receive(uint32 dt, uint32 maxCycles) public {
+    // receiveStreams at any time within one cycle length: exactly the received amount moves from
+    // S to P and to the receiver's splittable, no tokens move
+    function prove_accounting_receive(
+        uint128 streams,
+        uint128 splits,
+        uint128 otherSplittable,
+        uint128 otherCollectable,
+        uint128 bySplittable,
+        uint128 byCollectable,
+        uint32 dt,
+        uint32 maxCycles
+    ) public {
+        _totals(streams, splits);
+        _tokenBalance(address(this), DEPOSIT);
+        _splitsBalance(other, otherSplittable, otherCollectable);
+        _splitsBalance(bystander, bySplittable, byCollectable);
+        uint256 held = uint256(otherSplittable) + otherCollectable + bySplittable + byCollectable;
+        require(held <= splits);
         _startStream();
         warpBy(dt, CYCLE);
-        (uint128 streamsBefore, uint128 splitsBefore) = drips.balances(token);
+
         uint128 received = drips.receiveStreams(other, token, maxCycles);
-        (uint128 streamsAfter, uint128 splitsAfter) = drips.balances(token);
+
         _assertTokensMatchTotals();
-        _assertSplitsMatchAccounts();
-        assert(streamsAfter == streamsBefore - received);
-        assert(splitsAfter == splitsBefore + received);
+        (uint128 streamsAfter,) = drips.balances(token);
+        assert(uint256(streamsAfter) + received == uint256(streams) + DEPOSIT);
+        _assertSplitsRest(splits - held, _held(other) + _held(bystander));
+        assert(drips.splittable(other, token) == uint256(otherSplittable) + received);
+        _assertBystander(bySplittable, byCollectable);
     }
 
     // squeezeStreams with the one-entry history at any time within one cycle length: the same
-    function prove_accounting_squeeze(uint32 dt) public {
+    function prove_accounting_squeeze(
+        uint128 streams,
+        uint128 splits,
+        uint128 otherSplittable,
+        uint128 otherCollectable,
+        uint128 bySplittable,
+        uint128 byCollectable,
+        uint32 dt
+    ) public {
+        _totals(streams, splits);
+        _tokenBalance(address(this), DEPOSIT);
+        _splitsBalance(other, otherSplittable, otherCollectable);
+        _splitsBalance(bystander, bySplittable, byCollectable);
+        uint256 held = uint256(otherSplittable) + otherCollectable + bySplittable + byCollectable;
+        require(held <= splits);
         _startStream();
         (,, uint32 updateTime,, uint32 maxEnd) = drips.streamsState(me, token);
         warpBy(dt, CYCLE);
         StreamsHistory[] memory history = new StreamsHistory[](1);
         history[0] = StreamsHistory(bytes32(0), _stream(), updateTime, maxEnd);
-        (uint128 streamsBefore, uint128 splitsBefore) = drips.balances(token);
+
         uint128 squeezed = drips.squeezeStreams(other, token, me, bytes32(0), history);
-        (uint128 streamsAfter, uint128 splitsAfter) = drips.balances(token);
+
         _assertTokensMatchTotals();
-        _assertSplitsMatchAccounts();
-        assert(streamsAfter == streamsBefore - squeezed);
-        assert(splitsAfter == splitsBefore + squeezed);
+        (uint128 streamsAfter,) = drips.balances(token);
+        assert(uint256(streamsAfter) + squeezed == uint256(streams) + DEPOSIT);
+        _assertSplitsRest(splits - held, _held(other) + _held(bystander));
+        assert(drips.splittable(other, token) == uint256(otherSplittable) + squeezed);
+        _assertBystander(bySplittable, byCollectable);
     }
 
-    // invariantWithdrawShouldAlwaysFail: with tokens matching the totals there is nothing to
-    // withdraw directly from Drips
-    function prove_accounting_withdraw_fails(uint128 given, uint256 amt) public {
+    // invariantWithdrawShouldAlwaysFail: when tokens match the totals there is nothing to withdraw
+    function prove_accounting_withdraw_fails(uint128 streams, uint128 splits, uint256 amt) public {
         require(amt > 0);
-        driver.give(other, token, given);
-        _assertTokensMatchTotals();
+        _totals(streams, splits);
         try drips.withdraw(token, address(this), amt) {
             assert(false);
         } catch {}
