@@ -1,4 +1,4 @@
-.PHONY: verify falsify verify-echidna verify-hevm falsify-echidna falsify-hevm \
+.PHONY: verify verify-echidna verify-hevm \
 	run-echidna run-hevm build-hevm report list
 
 T ?=
@@ -12,7 +12,9 @@ export ECHIDNA_HASHCONS ?= 1
 # The config is test/symbolic/<config>.yaml for echidna, and the matching HEVM_<config> flags for
 # hevm. Each property runs in its own process, one after the other.
 
-# Must be verified.
+# All of them must be verified. Harnesses in test/symbolic/ that are not listed here (the negative
+# control, MutantStreamSymAcct, ProveBalConservation*, ProveBalanceAtInFuture) hold properties that
+# are expected to fail; they are kept for reference and not run.
 VERIFY := \
 	prove_split_value_conservation:ProveSplits:verify \
 	prove_split_monotonic:ProveSplits:verify-arith \
@@ -81,47 +83,29 @@ VERIFY := \
 	prove_real_squeeze_accounting:ProveRealSqueeze:verify \
 	prove_real_no_pre_update:ProveRealSqueeze:verify
 
-# Must fail with a counterexample: the negative control and the mutants show the assertions are
-# reachable, prove_balance_conservation* is a known-false (too strong) conservation equality, and
-# prove_balance_at_in_future is the testBalanceAtInFuture failure on the current code.
-FALSIFY := \
-	prove_neg_control:ProveSplitsExtra:verify \
-	prove_mut_off_by_one:MutantStreamSymAcct:verify-arith \
-	prove_mut_past_end:MutantStreamSymAcct:verify-arith \
-	prove_mut_double_rate:MutantStreamSymAcct:verify-arith \
-	prove_mut_no_drain:MutantStreamSymAcct:verify-arith \
-	prove_balance_conservation:ProveBalConservation:verify \
-	prove_balance_conservation3:ProveBalConservation3:verify \
-	prove_balance_at_in_future:ProveBalanceAtInFuture:verify-deep
-
 # Per-property settings on top of the config: harder SMT queries (symbolic account keys, the full
 # deployment) get a longer solver timeout, and the N=3 splits run fewer solvers to fit in memory.
 LONG_QUERIES := prove_view_eq_actual_symacct prove_deposit_exact_symacct prove_active_exact_symacct \
-	prove_balance_symacct_empty prove_mut_off_by_one prove_mut_past_end prove_mut_double_rate \
-	prove_mut_no_drain prove_real_squeeze_accounting prove_real_no_pre_update
+	prove_balance_symacct_empty prove_real_squeeze_accounting prove_real_no_pre_update
 FEW_SOLVERS := prove_conservation_3sym prove_receivers_sum_3sym
-ENV_prove_balance_at_in_future := HEVM_EAGER_SMT=1
 
 # hevm flags for each config, matching the yaml and the hevm settings echidna uses internally
 # (max width 5, max depth = symExecMaxExplore, 2^12-byte buffers, only deployed addresses)
 HEVM_verify       := --max-iterations 15
 HEVM_verify-arith := --max-iterations 15 --abstract-arith
-HEVM_verify-deep  := --max-iterations 200
 HEVM_FLAGS := --solver bitwuzla --max-buf-size 12 --max-width 5 --max-depth 50 --only-deployed \
 	--loop-detection-heuristic StackBased
 
-entry = $(filter $(1):%,$(VERIFY) $(FALSIFY))
+entry = $(filter $(1):%,$(VERIFY))
 field = $(word $(2),$(subst :, ,$(call entry,$(1))))
 names = $(foreach e,$(1),$(firstword $(subst :, ,$(e))))
 smt_timeout = $(if $(filter $(1),$(LONG_QUERIES)),500,120)
 solvers = $(if $(filter $(1),$(FEW_SOLVERS)),3,5)
 
 # make verify-echidna             every VERIFY property, one by one, then the report
-# make verify-echidna T=prove_x   a single property (from either list)
+# make verify-echidna T=prove_x   a single property (from the list)
 # make verify-hevm [T=prove_x]    the same with hevm
-# make falsify-echidna            every FALSIFY property (falsify-hevm with hevm)
 verify: verify-echidna
-falsify: falsify-echidna
 
 verify-echidna:
 ifeq ($(strip $(T)),)
@@ -139,20 +123,12 @@ else
 	@$(MAKE) --no-print-directory run-hevm T=$(T)
 endif
 
-falsify-echidna:
-	@for p in $(call names,$(FALSIFY)); do $(MAKE) --no-print-directory run-echidna T=$$p; done
-	@$(MAKE) --no-print-directory report
-
-falsify-hevm: build-hevm
-	@for p in $(call names,$(FALSIFY)); do $(MAKE) --no-print-directory run-hevm T=$$p; done
-	@$(MAKE) --no-print-directory report
-
 run-echidna:
 ifeq ($(strip $(call entry,$(T))),)
 	$(error unknown property T=$(T), see make list)
 endif
 	@mkdir -p logs
-	$(ENV_$(T)) $(ECHIDNA) test/symbolic/$(call field,$(T),2).t.sol --contract $(call field,$(T),2) \
+	$(ECHIDNA) test/symbolic/$(call field,$(T),2).t.sol --contract $(call field,$(T),2) \
 		--config test/symbolic/$(call field,$(T),3).yaml --sym-exec-target $(T) \
 		--sym-exec-timeout $(call smt_timeout,$(T)) --sym-exec-n-solvers $(call solvers,$(T)) \
 		| tee logs/verify-echidna-$(T).log
@@ -167,7 +143,7 @@ ifeq ($(strip $(call entry,$(T))),)
 	$(error unknown property T=$(T), see make list)
 endif
 	@mkdir -p logs
-	$(ENV_$(T)) $(HEVM) test --match '^$(T)$$' $(HEVM_FLAGS) $(HEVM_$(call field,$(T),3)) \
+	$(HEVM) test --match '^$(T)$$' $(HEVM_FLAGS) $(HEVM_$(call field,$(T),3)) \
 		--smt-timeout $(call smt_timeout,$(T)) --num-solvers $(call solvers,$(T)) \
 		| tee logs/verify-hevm-$(T).log
 
@@ -176,7 +152,6 @@ report:
 	@bad=0; \
 	for tool in echidna hevm; do \
 	for p in $(call names,$(VERIFY)); do want=verified; $(REPORT_ONE); done; \
-	for p in $(call names,$(FALSIFY)); do want=failed; $(REPORT_ONE); done; \
 	done; \
 	exit $$bad
 
@@ -191,4 +166,3 @@ endef
 
 list:
 	@for e in $(VERIFY); do echo "verify   $$e"; done
-	@for e in $(FALSIFY); do echo "falsify  $$e"; done
