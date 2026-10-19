@@ -81,7 +81,14 @@ VERIFY := \
 	prove_squeeze_default_no_revert:ProveSqueezePair:verify-arith \
 	prove_squeeze_vmstore:ProveSqueezeVmStore:verify \
 	prove_real_squeeze_accounting:ProveRealSqueeze:verify \
-	prove_real_no_pre_update:ProveRealSqueeze:verify
+	prove_real_no_pre_update:ProveRealSqueeze:verify \
+	prove_accounting_give:ProveAccounting:verify \
+	prove_accounting_split:ProveAccounting:verify \
+	prove_accounting_collect:ProveAccounting:verify \
+	prove_accounting_stream_balance:ProveAccounting:verify \
+	prove_accounting_receive:ProveAccounting:verify \
+	prove_accounting_squeeze:ProveAccounting:verify-arith \
+	prove_accounting_withdraw_fails:ProveAccounting:verify
 
 # Per-property settings on top of the config: harder SMT queries (symbolic account keys, the full
 # deployment) get a longer solver timeout, and the N=3 splits run fewer solvers to fit in memory.
