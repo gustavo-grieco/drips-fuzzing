@@ -11,7 +11,7 @@ import {StreamConfig, StreamConfigImpl} from "src/Streams.sol";
     accessors unpack it. The proof: every field survives create() then its accessor, for all
     inputs. A packing/masking bug (field bleed) would falsify.
 
-      make prove_config_roundtrip
+      make verify T=prove_config_roundtrip
 */
 contract ProveStreamConfig is Test {
     using StreamConfigImpl for StreamConfig;

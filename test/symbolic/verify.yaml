@@ -1,6 +1,5 @@
-# Verification with plain bit-vector arithmetic. block.timestamp is symbolic in
-# [initialTimestamp, initialTimestamp + maxTimeDelay]; 400000 s keeps it inside the
-# 604800 s cycle that holds echidna's initialTimestamp (1524785992).
+# Verification with plain bit-vector arithmetic. Time windows are set inside each property
+# (EchidnaStart.warpBy), so maxTimeDelay does not matter here.
 testMode: verification
 format: text
 symExec: true
@@ -9,4 +8,3 @@ symExecMaxExplore: 50
 symExecNSolvers: 5
 symExecTimeout: 120
 symExecAbstractArith: false
-maxTimeDelay: 400000

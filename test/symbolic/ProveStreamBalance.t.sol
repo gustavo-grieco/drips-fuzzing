@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {EchidnaStart} from "./EchidnaStart.sol";
 import {Streams, StreamReceiver} from "src/Streams.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 
@@ -28,19 +29,22 @@ contract StreamBalHarness is Streams {
     }
 }
 
-contract ProveStreamBalance is Test {
+contract ProveStreamBalance is EchidnaStart, Test {
     StreamBalHarness h;
     function setUp() public { h = new StreamBalHarness(); }
 
-    function prove_deposit_exact(int128 delta) public {
+    function prove_deposit_exact(int128 delta, uint32 dt) public {
+        warpBy(dt, 604800);
         require(delta >= 0);
         assert(h.setBal(delta) == delta);
     }
-    function prove_withdraw_clamped_empty(int128 delta) public {
+    function prove_withdraw_clamped_empty(int128 delta, uint32 dt) public {
+        warpBy(dt, 604800);
         require(delta < 0);
         assert(h.setBal(delta) == 0);
     }
-    function prove_balance_tracks_delta(int128 delta) public {
+    function prove_balance_tracks_delta(int128 delta, uint32 dt) public {
+        warpBy(dt, 604800);
         require(delta >= 0);
         uint128 before = h.balNow();
         int128 rbd = h.setBal(delta);
@@ -48,7 +52,8 @@ contract ProveStreamBalance is Test {
         assert(int128(aft) == int128(before) + rbd);
     }
     // deposit, then withdraw any amount: exactly min(deposit, withdrawal) leaves, the rest stays
-    function prove_withdraw_clamped(int128 deposit, int128 withdrawal) public {
+    function prove_withdraw_clamped(int128 deposit, int128 withdrawal, uint32 dt) public {
+        warpBy(dt, 604800);
         require(deposit >= 0 && withdrawal > 0);
         h.setBal(deposit);
         int128 rbd = h.setBal(-withdrawal);

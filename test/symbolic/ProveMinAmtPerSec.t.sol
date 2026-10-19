@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {EchidnaStart} from "./EchidnaStart.sol";
 import {Streams, StreamReceiver, StreamConfigImpl} from "src/Streams.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 
@@ -30,7 +31,7 @@ contract MinAmtHarness is Streams {
     }
 }
 
-contract ProveMinAmtPerSec is Test {
+contract ProveMinAmtPerSec is EchidnaStart, Test {
     MinAmtHarness h;
 
     function setUp() public {

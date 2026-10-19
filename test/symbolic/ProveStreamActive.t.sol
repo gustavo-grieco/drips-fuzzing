@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {EchidnaStart} from "./EchidnaStart.sol";
 import {Streams, StreamReceiver, StreamConfigImpl} from "src/Streams.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 
@@ -39,7 +40,7 @@ contract StreamActiveHarness is Streams {
     }
 }
 
-contract ProveStreamActive is Test {
+contract ProveStreamActive is EchidnaStart, Test {
     StreamActiveHarness h;
     uint32 constant BASE = 1524785992;
     function setUp() public { h = new StreamActiveHarness(); h.initCfg(); }

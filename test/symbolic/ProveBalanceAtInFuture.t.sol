@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Echidna} from "src/echidna/Echidna.sol";
+import {EchidnaStart} from "./EchidnaStart.sol";
 
 /*
     testBalanceAtInFuture (EchidnaStreamsTests), VERBATIM, on the real Echidna deployment of the
@@ -20,7 +21,7 @@ import {Echidna} from "src/echidna/Echidna.sol";
     EXPECTED TO FAIL: the counterexample is block.timestamp = T0 + 7. Without the max-end hints
     in the constructor (or with a wider time window) the run runs out of memory or time instead.
 */
-contract ProveBalanceAtInFuture is Echidna {
+contract ProveBalanceAtInFuture is EchidnaStart, Echidna {
     uint160 constant MIN = 100000000; // _minAmtPerSec for 10-second cycles
 
     // The last call is the suite's own setMaxEndHints action (a call any of the fuzzers can make):
@@ -33,9 +34,9 @@ contract ProveBalanceAtInFuture is Echidna {
 
     // only block.timestamp is symbolic, inside the deployment's 10-second cycle
     // (STARTING_TIMESTAMP is 1524785992, its cycle starts at ...990): t in [T0 + 2, T0 + 7]
-    function prove_balance_at_in_future(uint256 dummy) public {
-        dummy;
-        require(block.timestamp >= STARTING_TIMESTAMP + 2 && block.timestamp <= STARTING_TIMESTAMP + 7);
+    function prove_balance_at_in_future(uint32 dt) public {
+        require(dt >= 2);
+        warpBy(dt, 7);
         testBalanceAtInFuture(192, 0, 0);
     }
 }

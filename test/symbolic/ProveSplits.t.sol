@@ -19,7 +19,7 @@ import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
     So the ONLY symbolic input is `amount`, and splitAmt reduces to `amount * 300000 / 1e6`
     (const mul, const div) -- exactly the shape post1's abstract-arith lemmas target.
 
-      make prove_split_value_conservation
+      make verify T=prove_split_value_conservation
 */
 contract SplitsHarness is Splits {
     uint256 constant ACC = 7;

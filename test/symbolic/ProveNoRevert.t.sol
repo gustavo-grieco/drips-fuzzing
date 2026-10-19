@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {EchidnaStart} from "./EchidnaStart.sol";
 import {Splits, SplitsReceiver} from "src/Splits.sol";
 import {Streams, StreamReceiver, StreamConfigImpl} from "src/Streams.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
@@ -86,7 +87,7 @@ contract NoRevStreamsHarness is Streams {
     }
 }
 
-contract ProveNoRevert is Test {
+contract ProveNoRevert is EchidnaStart, Test {
     NoRevSplitsHarness hs;
     NoRevStreamsHarness hst;
     function setUp() public { hs = new NoRevSplitsHarness(); hst = new NoRevStreamsHarness(); }
@@ -111,12 +112,14 @@ contract ProveNoRevert is Test {
         try hs.doGive(amt) {} catch { assert(false); }
     }
     // testSetStreamBalanceShouldNotRevert (module, empty receivers, clamped deposit)
-    function prove_setbalance_no_revert(int128 delta) public {
+    function prove_setbalance_no_revert(int128 delta, uint32 dt) public {
+        warpBy(dt, 604800);
         require(delta >= 0 && uint128(delta) <= hst.maxBal());
         try hst.doSetBalance(delta) {} catch { assert(false); }
     }
     // withdraw-all variant: withdrawing everything never reverts
-    function prove_withdrawall_no_revert(int128 deposit) public {
+    function prove_withdrawall_no_revert(int128 deposit, uint32 dt) public {
+        warpBy(dt, 604800);
         require(deposit >= 0 && uint128(deposit) <= hst.maxBal());
         hst.doSetBalance(deposit);
         try hst.doSetBalance(type(int128).min) {} catch { assert(false); }
@@ -128,18 +131,21 @@ contract ProveNoRevert is Test {
         try hs.doAddSplits(w1, w2) {} catch { assert(false); }
     }
     // testSetStreamsShouldNotRevert (zero balance): valid receiver config never reverts, ∀ amtPerSec
-    function prove_setstreams_no_revert_zerobal(uint160 aps) public {
+    function prove_setstreams_no_revert_zerobal(uint160 aps, uint32 dt) public {
+        warpBy(dt, 604800);
         require(aps >= hst.minAmt());
         try hst.doSetStreamsZeroBal(aps) {} catch { assert(false); }
     }
 
     // = testAddStreamShouldNotRevert (zero-balance scope)
-    function prove_addstream_no_revert_zerobal(uint160 aps1, uint160 aps2) public {
+    function prove_addstream_no_revert_zerobal(uint160 aps1, uint160 aps2, uint32 dt) public {
+        warpBy(dt, 604800);
         require(aps1 >= hst.minAmt() && aps2 >= hst.minAmt());
         try hst.doAddStream(aps1, aps2) {} catch { assert(false); }
     }
     // = testRemoveStreamShouldNotRevert (zero-balance scope)
-    function prove_removestream_no_revert_zerobal(uint160 aps1, uint160 aps2) public {
+    function prove_removestream_no_revert_zerobal(uint160 aps1, uint160 aps2, uint32 dt) public {
+        warpBy(dt, 604800);
         require(aps1 >= hst.minAmt() && aps2 >= hst.minAmt());
         try hst.doRemoveStream(aps1, aps2) {} catch { assert(false); }
     }

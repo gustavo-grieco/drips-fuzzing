@@ -1,14 +1,16 @@
-.PHONY: verify falsify verify-echidna report list
+.PHONY: verify falsify verify-echidna verify-hevm falsify-echidna falsify-hevm \
+	run-echidna run-hevm build-hevm report list
 
 T ?=
 ECHIDNA ?= echidna
+HEVM ?= hevm
 
 export SOLC_VERSION ?= 0.8.20
 export ECHIDNA_HASHCONS ?= 1
 
-# Symbolic properties, as property:contract:config. The harness is test/symbolic/<contract>.t.sol
-# and the config is test/symbolic/<config>.yaml. Each property runs in its own echidna process,
-# one after the other.
+# Symbolic properties, as property:contract:config. The harness is test/symbolic/<contract>.t.sol.
+# The config is test/symbolic/<config>.yaml for echidna, and the matching HEVM_<config> flags for
+# hevm. Each property runs in its own process, one after the other.
 
 # Must be verified.
 VERIFY := \
@@ -100,45 +102,91 @@ LONG_QUERIES := prove_view_eq_actual_symacct prove_deposit_exact_symacct prove_a
 FEW_SOLVERS := prove_conservation_3sym prove_receivers_sum_3sym
 ENV_prove_balance_at_in_future := HEVM_EAGER_SMT=1
 
+# hevm flags for each config, matching the yaml and the hevm settings echidna uses internally
+# (max width 5, max depth = symExecMaxExplore, 2^12-byte buffers, only deployed addresses)
+HEVM_verify       := --max-iterations 15
+HEVM_verify-arith := --max-iterations 15 --abstract-arith
+HEVM_verify-deep  := --max-iterations 200
+HEVM_FLAGS := --solver bitwuzla --max-buf-size 12 --max-width 5 --max-depth 50 --only-deployed \
+	--loop-detection-heuristic StackBased
+
 entry = $(filter $(1):%,$(VERIFY) $(FALSIFY))
 field = $(word $(2),$(subst :, ,$(call entry,$(1))))
 names = $(foreach e,$(1),$(firstword $(subst :, ,$(e))))
-args = $(if $(filter $(1),$(LONG_QUERIES)),--sym-exec-timeout 500) $(if $(filter $(1),$(FEW_SOLVERS)),--sym-exec-n-solvers 3)
+smt_timeout = $(if $(filter $(1),$(LONG_QUERIES)),500,120)
+solvers = $(if $(filter $(1),$(FEW_SOLVERS)),3,5)
 
-# make verify             every VERIFY property, one by one, then the report
-# make verify T=prove_x   a single property (from either list)
-verify:
-ifeq ($(strip $(T)),)
-	@for p in $(call names,$(VERIFY)); do $(MAKE) --no-print-directory verify-echidna T=$$p; done
-	@$(MAKE) --no-print-directory report
-else
-	@$(MAKE) --no-print-directory verify-echidna T=$(T)
-endif
-
-falsify:
-	@for p in $(call names,$(FALSIFY)); do $(MAKE) --no-print-directory verify-echidna T=$$p; done
-	@$(MAKE) --no-print-directory report
+# make verify-echidna             every VERIFY property, one by one, then the report
+# make verify-echidna T=prove_x   a single property (from either list)
+# make verify-hevm [T=prove_x]    the same with hevm
+# make falsify-echidna            every FALSIFY property (falsify-hevm with hevm)
+verify: verify-echidna
+falsify: falsify-echidna
 
 verify-echidna:
+ifeq ($(strip $(T)),)
+	@for p in $(call names,$(VERIFY)); do $(MAKE) --no-print-directory run-echidna T=$$p; done
+	@$(MAKE) --no-print-directory report
+else
+	@$(MAKE) --no-print-directory run-echidna T=$(T)
+endif
+
+verify-hevm: build-hevm
+ifeq ($(strip $(T)),)
+	@for p in $(call names,$(VERIFY)); do $(MAKE) --no-print-directory run-hevm T=$$p; done
+	@$(MAKE) --no-print-directory report
+else
+	@$(MAKE) --no-print-directory run-hevm T=$(T)
+endif
+
+falsify-echidna:
+	@for p in $(call names,$(FALSIFY)); do $(MAKE) --no-print-directory run-echidna T=$$p; done
+	@$(MAKE) --no-print-directory report
+
+falsify-hevm: build-hevm
+	@for p in $(call names,$(FALSIFY)); do $(MAKE) --no-print-directory run-hevm T=$$p; done
+	@$(MAKE) --no-print-directory report
+
+run-echidna:
 ifeq ($(strip $(call entry,$(T))),)
 	$(error unknown property T=$(T), see make list)
 endif
 	@mkdir -p logs
 	$(ENV_$(T)) $(ECHIDNA) test/symbolic/$(call field,$(T),2).t.sol --contract $(call field,$(T),2) \
-		--config test/symbolic/$(call field,$(T),3).yaml --sym-exec-target $(T) $(call args,$(T)) | tee logs/verify-echidna-$(T).log
+		--config test/symbolic/$(call field,$(T),3).yaml --sym-exec-target $(T) \
+		--sym-exec-timeout $(call smt_timeout,$(T)) --sym-exec-n-solvers $(call solvers,$(T)) \
+		| tee logs/verify-echidna-$(T).log
 
-# Result of every property that has a log. Fails if any of them differs from its expected outcome.
+# hevm reads the forge artifacts, which need the AST
+build-hevm:
+	@forge clean 2> /dev/null
+	@forge build --ast 2> /dev/null
+
+run-hevm:
+ifeq ($(strip $(call entry,$(T))),)
+	$(error unknown property T=$(T), see make list)
+endif
+	@mkdir -p logs
+	$(ENV_$(T)) $(HEVM) test --match '^$(T)$$' $(HEVM_FLAGS) $(HEVM_$(call field,$(T),3)) \
+		--smt-timeout $(call smt_timeout,$(T)) --num-solvers $(call solvers,$(T)) \
+		| tee logs/verify-hevm-$(T).log
+
+# Result of every property that has a log, per tool. Fails if any differs from its expected outcome.
 report:
 	@bad=0; \
+	for tool in echidna hevm; do \
 	for p in $(call names,$(VERIFY)); do want=verified; $(REPORT_ONE); done; \
 	for p in $(call names,$(FALSIFY)); do want=failed; $(REPORT_ONE); done; \
+	done; \
 	exit $$bad
 
+# echidna prints "prove_x(uint256): verified ✅"; hevm prints "[PASS] prove_x" in color
 define REPORT_ONE
-log=logs/verify-echidna-$$p.log; [ -f $$log ] || continue; \
-got=$$(grep -m1 "^$$p(.*): " $$log | sed 's/^[^:]*: *//'); \
+log=logs/verify-$$tool-$$p.log; [ -f $$log ] || continue; \
+if [ $$tool = echidna ]; then got=$$(grep -m1 "^$$p(.*): " $$log | sed 's/^[^:]*: *//'); \
+else got=$$(sed 's/\x1b\[[0-9;]*m//g' $$log | grep -m1 -E "^ *\[[A-Z]+\] $$p$$" | sed -E 's/^ *\[([A-Z]+)\].*/\1/; s/^PASS$$/verified/; s/^FAIL$$/failed/'); fi; \
 case "$$got" in $$want*) mark=ok;; *) mark=UNEXPECTED; bad=1;; esac; \
-printf '%-12s %-42s %s\n' "$$mark" "$$p" "$${got:-no result}"
+printf '%-12s %-8s %-42s %s\n' "$$mark" "$$tool" "$$p" "$${got:-no result}"
 endef
 
 list:

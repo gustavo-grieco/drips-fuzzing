@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {EchidnaStart} from "./EchidnaStart.sol";
 import {
     Streams,
     StreamReceiver,
@@ -30,7 +31,7 @@ import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
     is stored AND recomputed by _verifyStreamsHistory from the passed history (same U) => identical keccak
     expr => equality simplifies to true, no preimage blowup.
 
-      make prove_squeeze_vmstore
+      make verify T=prove_squeeze_vmstore
 */
 contract SqueezeVmStoreHarness is Streams {
     IERC20 constant ERC20 = IERC20(address(0xE12C20));
@@ -89,7 +90,7 @@ contract SqueezeVmStoreHarness is Streams {
     }
 }
 
-contract ProveSqueezeVmStore is Test {
+contract ProveSqueezeVmStore is EchidnaStart, Test {
     SqueezeVmStoreHarness h;
 
     function setUp() public {
@@ -98,7 +99,8 @@ contract ProveSqueezeVmStore is Test {
 
     // forall updateTime U in [BASE, BASE+1e5], forall block.timestamp:
     // the squeezed amount never exceeds what could stream since U.
-    function prove_squeeze_vmstore(uint32 U) public {
+    function prove_squeeze_vmstore(uint32 U, uint32 dt) public {
+        warpBy(dt, 604800);
         require(U >= 1524785992 && U <= 1524885992); // U above config.start, within a bounded window
         uint256 base = h.senderBase();
         vm.store(address(h), bytes32(base + 0), h.histHashFor(U)); // streamsHistoryHash

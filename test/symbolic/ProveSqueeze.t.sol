@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {EchidnaStart} from "./EchidnaStart.sol";
 import {
     Streams,
     StreamReceiver,
@@ -23,9 +24,8 @@ import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
       CLEAN      : squeezeStartCap = updateTime          => squeeze start = updateTime (BASE)
       REGRESSION : squeezeStartCap = cycleStart < update => squeeze start = cycleStart  (over-squeeze)
 
-    The ONLY symbolic input is block.timestamp. echidna's verification mode injects it as
-    `Var "symbolic_block_timestamp"` constrained to [initialTimestamp, initialTimestamp+maxTimeDelay]
-    with initialTimestamp = 1524785992 (echidna default). setUp runs at that concrete BASE, so
+    The ONLY symbolic input is the squeeze time BASE + dt, dt <= 400000 (EchidnaStart.warpBy), which
+    stays inside the cycle that holds BASE = 1524785992. setUp runs at that concrete BASE, so
     _setStreams pins updateTime = BASE (mid-cycle, off = 85192). prove_ then squeezes at the
     symbolic time => a genuine forall over the squeeze time.
 
@@ -33,7 +33,7 @@ import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
       CLEAN      : squeeze start == updateTime => amt == streamed[BASE, ts]           => VERIFIED
       REGRESSION : squeeze start == cycleStart  => amt == streamed[cycleStart, ts] > ref => FALSIFIED
 
-      make prove_no_pre_update_squeeze
+      make verify T=prove_no_pre_update_squeeze
 */
 contract SqueezeHarness is Streams {
     IERC20 constant ERC20 = IERC20(address(0xE12C20));
@@ -97,7 +97,7 @@ contract SqueezeHarness is Streams {
     }
 }
 
-contract ProveSqueeze is Test {
+contract ProveSqueeze is EchidnaStart, Test {
     SqueezeHarness h;
 
     function setUp() public {
@@ -106,8 +106,8 @@ contract ProveSqueeze is Test {
     }
 
     // No pre-update squeeze: the squeezed amount never exceeds what could stream since updateTime.
-    function prove_no_pre_update_squeeze(uint256 dummy) public view {
-        dummy;
+    function prove_no_pre_update_squeeze(uint32 dt) public {
+        warpBy(dt, 400000); // inside the cycle that holds START_TIMESTAMP
         uint128 amt = h.squeezeAmt();
         uint256 ref = h.refStreamed(uint256(1524785992), uint256(uint32(block.timestamp)));
         assert(uint256(amt) <= ref);

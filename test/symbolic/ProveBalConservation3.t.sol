@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {EchidnaStart} from "./EchidnaStart.sol";
 import {Streams, StreamReceiver, StreamConfigImpl} from "src/Streams.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 
@@ -39,11 +40,11 @@ contract BalCons3Harness is Streams {
     }
 }
 
-contract ProveBalConservation3 is Test {
+contract ProveBalConservation3 is EchidnaStart, Test {
     BalCons3Harness h;
     function setUp() public { h = new BalCons3Harness(); h.initCfg(); }
-    function prove_balance_conservation3(uint256 dummy) public view {
-        dummy;
+    function prove_balance_conservation3(uint32 dt) public {
+        warpBy(dt, 1500000);
         assert(h.senderDrained(uint32(block.timestamp)) == h.receiverReceivable());
     }
 }

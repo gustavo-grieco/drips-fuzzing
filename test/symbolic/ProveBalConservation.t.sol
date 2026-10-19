@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {EchidnaStart} from "./EchidnaStart.sol";
 import {Streams, StreamReceiver, StreamConfigImpl} from "src/Streams.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 
@@ -40,14 +41,14 @@ contract BalConsHarness is Streams {
     }
 }
 
-contract ProveBalConservation is Test {
+contract ProveBalConservation is EchidnaStart, Test {
     BalConsHarness h;
     function setUp() public { h = new BalConsHarness(); h.initCfg(); }
 
     // testBalanceAtInFuture core: sender outflow == receiver receivable. EXPECT FALSIFIED.
     // block.timestamp pinned to one mid-cycle instant so the receivable cycle loop is concrete.
-    function prove_balance_conservation(uint256 dummy) public view {
-        dummy;
+    function prove_balance_conservation(uint32 dt) public {
+        warpBy(dt, 400000);
         uint128 drained = h.senderDrained(uint32(block.timestamp));
         uint128 receivable = h.receiverReceivable();
         assert(drained == receivable);

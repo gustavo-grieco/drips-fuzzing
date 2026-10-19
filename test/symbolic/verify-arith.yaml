@@ -8,4 +8,3 @@ symExecMaxExplore: 50
 symExecNSolvers: 5
 symExecTimeout: 120
 symExecAbstractArith: true
-maxTimeDelay: 400000

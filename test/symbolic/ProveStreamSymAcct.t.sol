@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {EchidnaStart} from "./EchidnaStart.sol";
 import {Streams, StreamReceiver, StreamConfigImpl} from "src/Streams.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 
@@ -50,23 +51,26 @@ contract StreamSymAcctHarness is Streams {
     }
 }
 
-contract ProveStreamSymAcct is Test {
+contract ProveStreamSymAcct is EchidnaStart, Test {
     StreamSymAcctHarness h;
     function setUp() public { h = new StreamSymAcctHarness(); }
 
     // SIMPLEST: right after setStreams, balance == deposit, for EVERY account
-    function prove_deposit_exact_symacct(uint256 acc) public {
+    function prove_deposit_exact_symacct(uint256 acc, uint32 dt) public {
+        warpBy(dt, 400000);
         assert(h.setAndBalNow(acc) == h.DEPOSIT());
     }
     // STRONG: exact draining projection ∀ account, ∀ t within the stream duration
-    function prove_active_exact_symacct(uint256 acc, uint32 t) public {
+    function prove_active_exact_symacct(uint256 acc, uint32 t, uint32 dt) public {
+        warpBy(dt, 400000);
         uint32 nowTs = uint32(block.timestamp);
         require(t >= nowTs && t - nowTs <= h.DUR());
         assert(h.setAndBalAt(acc, t) == h.DEPOSIT() - (t - nowTs));
     }
 
     // states[erc20][acc] bookkeeping for EVERY account (symbolic storage key)
-    function prove_balance_symacct_empty(uint256 acc) public {
+    function prove_balance_symacct_empty(uint256 acc, uint32 dt) public {
+        warpBy(dt, 400000);
         assert(h.setEmptyBal(acc) == h.DEPOSIT());
     }
 }

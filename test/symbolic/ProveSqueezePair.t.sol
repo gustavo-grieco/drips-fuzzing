@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {EchidnaStart} from "./EchidnaStart.sol";
 import {Streams, StreamReceiver, StreamsHistory, StreamConfigImpl} from "src/Streams.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 
@@ -49,26 +50,27 @@ contract SqueezePairHarness is Streams {
     }
 }
 
-contract ProveSqueezePair is Test {
+contract ProveSqueezePair is EchidnaStart, Test {
     SqueezePairHarness h;
     function setUp() public { h = new SqueezePairHarness(); h.initCfg(); }
 
     // = testSqueezeViewVsActual
-    function prove_squeeze_view_eq_actual(uint256 dummy) public {
-        dummy;
+    function prove_squeeze_view_eq_actual(uint32 dt) public {
+        warpBy(dt, 2000000000);
         uint128 v = h.squeezeView();
         uint128 a = h.squeezeActual();
         assert(v == a);
     }
     // = testSqueezeViewVsActual for EVERY receiver account (symbolic storage key)
-    function prove_squeeze_view_eq_actual_symacct(uint256 recv) public {
+    function prove_squeeze_view_eq_actual_symacct(uint256 recv, uint32 dt) public {
+        warpBy(dt, 2000000000);
         uint128 v = h.squeezeViewFor(recv);
         uint128 a = h.squeezeActualFor(recv);
         assert(v == a);
     }
     // = testSqueezeWithDefaultHistoryShouldNotRevert
-    function prove_squeeze_default_no_revert(uint256 dummy) public {
-        dummy;
+    function prove_squeeze_default_no_revert(uint32 dt) public {
+        warpBy(dt, 2000000000);
         try h.squeezeActual() {} catch { assert(false); }
     }
 }

@@ -96,17 +96,17 @@ contract HintedConcrete is Test {
         vm.warp(1524785992); vm.roll(4370000);
         ProveBalanceAtInFuture h = new ProveBalanceAtInFuture();
         vm.warp(1524785992 + 5);
-        h.prove_balance_at_in_future(0);
+        h.prove_balance_at_in_future(5);
     }
 }
 
-// Echidna's counterexample from HEVM (verification mode): prove_balance_at_in_future(0),
+// Echidna's counterexample from HEVM (verification mode): prove_balance_at_in_future(dt = 7),
 // time delay 7 seconds after deployment.
 contract HevmCounterexampleReplay is Test {
     function test_hevm_cex() public {
         vm.warp(1524785992); vm.roll(4370000);
         ProveBalanceAtInFuture h = new ProveBalanceAtInFuture();
         vm.warp(1524785992 + 7); vm.roll(4370000 + 20911);
-        h.prove_balance_at_in_future(0);
+        h.prove_balance_at_in_future(7);
     }
 }

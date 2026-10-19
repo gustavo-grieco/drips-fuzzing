@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {EchidnaStart} from "./EchidnaStart.sol";
 import {Streams, StreamReceiver, StreamConfigImpl} from "src/Streams.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 
@@ -31,12 +32,13 @@ contract SymDepositHarness is Streams {
     }
 }
 
-contract ProveSymDeposit is Test {
+contract ProveSymDeposit is EchidnaStart, Test {
     SymDepositHarness h;
     function setUp() public { h = new SymDepositHarness(); }
 
     // For ALL deposits: right after setStreams, balanceAt(updateTime) == deposit.
-    function prove_sym_deposit_initial(uint128 deposit) public {
+    function prove_sym_deposit_initial(uint128 deposit, uint32 dt) public {
+        warpBy(dt, 604800);
         require(deposit >= uint128(h.DUR()));                        // covers full duration => short-circuit
         require(deposit <= uint128(uint256(uint128(type(int128).max))));
         assert(h.setDepositBalNow(deposit) == deposit);

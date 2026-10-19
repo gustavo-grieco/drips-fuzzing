@@ -10,7 +10,7 @@ import {Splits, SplitsReceiver} from "src/Splits.sol";
     keccak concrete and unrolls the weight-sum loop, so splitsWeight is the concrete constant
     450_000. The only symbolic input is `amount`, and `splitAmt = amount * 450000 / 1e6`.
 
-      make prove_split_multi_conservation
+      make verify T=prove_split_multi_conservation
 */
 contract SplitsMultiHarness is Splits {
     uint256 constant ACC = 7;
