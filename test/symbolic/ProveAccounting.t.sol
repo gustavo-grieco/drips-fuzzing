@@ -32,8 +32,8 @@ import {
     or a negative setStreams). AccountingDriver calls the production DriverTransferUtils functions
     that AddressDriver uses, so the token movements are the real ones.
 
-    Scope: the stream configurations used by receive and squeeze are concrete (one stream started
-    inside the property), so for those two only the balances are symbolic. The streams side of (2)
+    For receive and squeeze the streams state is symbolic too: any amtDeltas over two receivable
+    cycles, and a sender history entry with any rate and maxEnd, at a fixed time. The streams side of (2)
     while time passes (sender balance drained vs receivable + squeezable) is not covered; it is the
     continuous vs cycle-quantized question of testBalanceAtInFuture.
 */
@@ -87,8 +87,6 @@ contract AccountingDriver is DriverTransferUtils {
 
 contract ProveAccounting is EchidnaStart, Test {
     uint32 constant CYCLE = 604800;
-    uint160 constant RATE = 1e9; // 1 token per second
-    uint128 constant DEPOSIT = 10_000_000_000; // the stream stays active for the whole window
 
     // Managed._erc1967Slot: keccak256(name) - 1024
     uint256 constant DRIPS_SLOT = uint256(keccak256("eip1967.drips.storage")) - 1024;
@@ -176,11 +174,6 @@ contract ProveAccounting is EchidnaStart, Test {
     function _oneReceiver(uint32 weight) internal view returns (SplitsReceiver[] memory r) {
         r = new SplitsReceiver[](1);
         r[0] = SplitsReceiver({accountId: other, weight: weight});
-    }
-
-    function _stream() internal view returns (StreamReceiver[] memory r) {
-        r = new StreamReceiver[](1);
-        r[0] = StreamReceiver(other, StreamConfigImpl.create(0, RATE, 0, 0));
     }
 
     // ---- entrypoints ----
@@ -295,14 +288,25 @@ contract ProveAccounting is EchidnaStart, Test {
         assert(int256(token.balanceOf(address(this))) == int256(uint256(user)) - real);
     }
 
-    // a concrete stream me -> other, started now; S rises by DEPOSIT
-    function _startStream() internal {
-        StreamReceiver[] memory none = new StreamReceiver[](0);
-        driver.setStreams(token, none, int128(DEPOSIT), _stream(), 0, 0, address(this));
+    // states[token][acc], the base slot of the account's StreamsState
+    function _streamsState(uint256 acc) internal view returns (uint256) {
+        bytes32 byToken = keccak256(abi.encode(address(token), STREAMS_SLOT));
+        return uint256(keccak256(abi.encode(acc, byToken)));
     }
 
-    // receiveStreams at any time within one cycle length: exactly the received amount moves from
-    // S to P and to the receiver's splittable, no tokens move
+    // amtDeltas[cycle] (at +4) = (thisCycle, nextCycle)
+    function _amtDelta(uint256 acc, uint32 cycle, int128 thisCycle, int128 nextCycle) internal {
+        bytes32 slot = keccak256(abi.encode(uint256(cycle), _streamsState(acc) + 4));
+        vm.store(
+            address(drips),
+            slot,
+            bytes32(uint256(uint128(thisCycle)) | (uint256(uint128(nextCycle)) << 128))
+        );
+    }
+
+    // receiveStreams: any receiver state with two finished cycles to receive (any amtDeltas whose
+    // running amounts are non-negative and whose total is backed by S) and any maxCycles. Exactly
+    // the received amount moves from S to P and to the receiver's splittable, no tokens move.
     function prove_accounting_receive(
         uint128 streams,
         uint128 splits,
@@ -310,29 +314,37 @@ contract ProveAccounting is EchidnaStart, Test {
         uint128 otherCollectable,
         uint128 bySplittable,
         uint128 byCollectable,
-        uint32 dt,
+        int128[4] memory deltas,
         uint32 maxCycles
     ) public {
+        vm.warp(START_TIMESTAMP); // echidna's symbolic transaction may come later than setUp
         _totals(streams, splits);
-        _tokenBalance(address(this), DEPOSIT);
         _splitsBalance(other, otherSplittable, otherCollectable);
         _splitsBalance(bystander, bySplittable, byCollectable);
         uint256 held = uint256(otherSplittable) + otherCollectable + bySplittable + byCollectable;
         require(held <= splits);
-        _startStream();
-        warpBy(dt, CYCLE);
+        // cycles C and C + 1 are finished, C + 2 is the current one
+        uint32 c = START_TIMESTAMP / CYCLE - 1;
+        vm.store(address(drips), bytes32(_streamsState(other) + 3), bytes32(uint256(c))); // nextReceivableCycle
+        _amtDelta(other, c, deltas[0], deltas[1]);
+        _amtDelta(other, c + 1, deltas[2], deltas[3]);
+        int256 first = deltas[0];
+        int256 second = first + deltas[1] + deltas[2];
+        require(first >= 0 && second >= 0 && first + second <= int256(uint256(streams)));
 
         uint128 received = drips.receiveStreams(other, token, maxCycles);
 
         _assertTokensMatchTotals();
         (uint128 streamsAfter,) = drips.balances(token);
-        assert(uint256(streamsAfter) + received == uint256(streams) + DEPOSIT);
+        assert(uint256(streamsAfter) + received == streams);
         _assertSplitsRest(splits - held, _held(other) + _held(bystander));
         assert(drips.splittable(other, token) == uint256(otherSplittable) + received);
         _assertBystander(bySplittable, byCollectable);
     }
 
-    // squeezeStreams with the one-entry history at any time within one cycle length: the same
+    // squeezeStreams: a sender whose history is one entry streaming to `other` at any rate, set
+    // in the current cycle with any maxEnd, and any squeezable amount backed by S. The same
+    // movement as receive.
     function prove_accounting_squeeze(
         uint128 streams,
         uint128 splits,
@@ -340,25 +352,35 @@ contract ProveAccounting is EchidnaStart, Test {
         uint128 otherCollectable,
         uint128 bySplittable,
         uint128 byCollectable,
-        uint32 dt
+        uint160 rate,
+        uint32 maxEnd
     ) public {
+        vm.warp(START_TIMESTAMP);
         _totals(streams, splits);
-        _tokenBalance(address(this), DEPOSIT);
         _splitsBalance(other, otherSplittable, otherCollectable);
         _splitsBalance(bystander, bySplittable, byCollectable);
         uint256 held = uint256(otherSplittable) + otherCollectable + bySplittable + byCollectable;
         require(held <= splits);
-        _startStream();
-        (,, uint32 updateTime,, uint32 maxEnd) = drips.streamsState(me, token);
-        warpBy(dt, CYCLE);
+        require(rate >= drips.minAmtPerSec() && rate <= 2 ** 100);
+        uint32 updateTime = START_TIMESTAMP / CYCLE * CYCLE + 1000; // in the current cycle
         StreamsHistory[] memory history = new StreamsHistory[](1);
-        history[0] = StreamsHistory(bytes32(0), _stream(), updateTime, maxEnd);
+        StreamReceiver[] memory receivers = new StreamReceiver[](1);
+        receivers[0] = StreamReceiver(other, StreamConfigImpl.create(0, rate, 0, 0));
+        history[0] = StreamsHistory(bytes32(0), receivers, updateTime, maxEnd);
+        bytes32 historyHash = drips.hashStreamsHistory(0, drips.hashStreams(receivers), updateTime, maxEnd);
+        vm.store(address(drips), bytes32(_streamsState(me)), historyHash); // streamsHistoryHash
+        vm.store( // updateTime, maxEnd, lastUpdatedCycleConfigs = 1
+            address(drips),
+            bytes32(_streamsState(me) + 3),
+            bytes32((uint256(updateTime) << 32) | (uint256(maxEnd) << 64) | (uint256(1) << 224))
+        );
+        require(drips.squeezeStreamsResult(other, token, me, bytes32(0), history) <= streams);
 
         uint128 squeezed = drips.squeezeStreams(other, token, me, bytes32(0), history);
 
         _assertTokensMatchTotals();
         (uint128 streamsAfter,) = drips.balances(token);
-        assert(uint256(streamsAfter) + squeezed == uint256(streams) + DEPOSIT);
+        assert(uint256(streamsAfter) + squeezed == streams);
         _assertSplitsRest(splits - held, _held(other) + _held(bystander));
         assert(drips.splittable(other, token) == uint256(otherSplittable) + squeezed);
         _assertBystander(bySplittable, byCollectable);

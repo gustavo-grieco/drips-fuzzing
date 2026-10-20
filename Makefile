@@ -17,7 +17,8 @@ export ECHIDNA_HASHCONS ?= 1
 # are expected to fail; they are kept for reference and not run.
 # prove_accounting_split, prove_squeezable_cant_be_withdrawn and prove_squeezable_cant_be_undone
 # need simplifier rules not yet in hevm 0.58 (offset-0 packed fields, and the packed uint32 offset
-# that depends on now < now - now % cycleSecs, which is never true).
+# that depends on now < now - now % cycleSecs, which is never true). patches/ has them, as patches
+# for hevm main and echidna master; see patches/README.md.
 VERIFY := \
 	prove_split_value_conservation:ProveSplits:verify \
 	prove_split_monotonic:ProveSplits:verify-arith \
@@ -101,14 +102,22 @@ VERIFY := \
 	prove_live_withdraw_clamped:ProveStreamBalanceLive:verify \
 	prove_live_withdraw_all:ProveStreamBalanceLive:verify \
 	prove_live_setbalance_no_revert:ProveStreamBalanceLive:verify \
-	prove_amt_delta_sum_zero_set:ProveAmtDeltas:verify-arith
+	prove_amt_delta_sum_zero_set:ProveAmtDeltas:verify-arith \
+	prove_squeeze_fuzzed_history_no_revert:ProveSqueezeFuzzedHistory:verify
 
 # Not verified yet: no verdict within 20 minutes (exploration or solving does not finish).
 # To retry one, move its line back into VERIFY above.
-#	prove_accounting_receive:ProveAccounting:verify \
-#	prove_accounting_squeeze:ProveAccounting:verify-arith \
+#	prove_accounting_receive:ProveAccounting:verify-z3 \
+#	prove_accounting_squeeze:ProveAccounting:verify-z3 \
 #	prove_amt_delta_sum_zero_stop:ProveAmtDeltas:verify-arith \
 #	prove_amt_delta_sum_zero_receive:ProveAmtDeltas:verify-arith \
+# Not run to completion yet (passes forge fuzzing):
+#	prove_drain_streams_first_cycle:ProveWithdrawAll:verify \
+#	prove_drain_streams_later:ProveWithdrawAll:verify \
+# Also unverified, and in ProveAmtDeltas.t.sol, so they need their own file before they can be
+# listed: ProveAmtDeltasInductive (prove_amt_delta_inductive_receive and _squeeze) and
+# ProveAmtDeltasReceive (prove_amt_delta_receive_effect). The solver cannot relate the int128
+# sums when they are grouped differently on each side of the equation.
 
 # Per-property settings on top of the config: harder SMT queries (symbolic account keys, the full
 # deployment) get a longer solver timeout, and the N=3 splits run fewer solvers to fit in memory.

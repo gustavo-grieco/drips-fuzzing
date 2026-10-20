@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
 import {EchidnaStart} from "./EchidnaStart.sol";
-import {Streams, StreamReceiver, StreamConfigImpl} from "src/Streams.sol";
+import {Streams, StreamReceiver, StreamsHistory, StreamConfigImpl} from "src/Streams.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 
 /*
@@ -50,13 +50,73 @@ contract AmtDeltaHarness is Streams {
         return _receiveStreams(RECV, ERC20, type(uint32).max);
     }
 
-    function _deltas() internal view returns (mapping(uint32 => AmtDelta) storage) {
+    function _state(uint256 acc) internal view returns (StreamsState storage) {
         StreamsStorage storage s;
         bytes32 slot = SLOT;
         assembly {
             s.slot := slot
         }
-        return s.states[ERC20][RECV].amtDeltas;
+        return s.states[ERC20][acc];
+    }
+
+    function _deltas() internal view returns (mapping(uint32 => AmtDelta) storage) {
+        return _state(RECV).amtDeltas;
+    }
+
+    // ---- writing a symbolic state, for the inductive proofs ----
+
+    function setDelta(uint32 cycle, int128 thisCycle, int128 nextCycle) external {
+        _deltas()[cycle] = AmtDelta(thisCycle, nextCycle);
+    }
+
+    function setNextReceivableCycle(uint32 cycle) external {
+        _state(RECV).nextReceivableCycle = cycle;
+    }
+
+    // the deltas of `d.length / 2` cycles from `first` on, and the next cycle to receive, in one
+    // call: hevm counts every call into the same contract as a loop iteration
+    function setReceiver(uint32 nextReceivable, uint32 first, int128[10] memory d) external {
+        _state(RECV).nextReceivableCycle = nextReceivable;
+        for (uint32 i = 0; i < 5; i++) {
+            _deltas()[first + i] = AmtDelta(d[2 * i], d[2 * i + 1]);
+        }
+    }
+
+    function deltaSum(uint32 first, uint32 last) external view returns (int256 sum) {
+        // unchecked: the deltas are int128, so the sum of a few of them cannot overflow, and the
+        // overflow checks would only burden the solver
+        unchecked {
+            for (uint32 c = first; c <= last; c++) {
+                AmtDelta storage d = _deltas()[c];
+                sum += int256(d.thisCycle) + d.nextCycle;
+            }
+        }
+    }
+
+    // the sender's history is the single entry `streams`, set at updateTime in the current cycle
+    function setSenderHistory(StreamReceiver[] memory streams, uint32 updateTime, uint32 maxEnd) external {
+        StreamsState storage sender = _state(SENDER);
+        sender.streamsHistoryHash = _hashStreamsHistory(0, _hashStreams(streams), updateTime, maxEnd);
+        sender.updateTime = updateTime;
+        sender.maxEnd = maxEnd;
+        sender.lastUpdatedCycleConfigs = 1;
+    }
+
+    function receiveSome(uint32 maxCycles) external returns (uint128) {
+        return _receiveStreams(RECV, ERC20, maxCycles);
+    }
+
+    function squeeze(StreamsHistory[] memory history) external returns (uint128) {
+        return _squeezeStreams(RECV, ERC20, SENDER, 0, history);
+    }
+
+    // the deltas of five cycles from `first` on and the next cycle to receive, in one call
+    function receiverState(uint32 first) external view returns (uint32 nextReceivable, int128[10] memory d) {
+        nextReceivable = _state(RECV).nextReceivableCycle;
+        for (uint32 i = 0; i < 5; i++) {
+            AmtDelta storage a = _deltas()[first + i];
+            (d[2 * i], d[2 * i + 1]) = (a.thisCycle, a.nextCycle);
+        }
     }
 
     function delta(uint32 cycle) external view returns (int128, int128) {
@@ -149,5 +209,134 @@ contract ProveAmtDeltas is EchidnaStart, Test {
         else if (when == 2) vm.warp(START_TIMESTAMP + offsets[2]);
         else if (when == 3) vm.warp(START_TIMESTAMP + offsets[3]);
         else vm.warp(START_TIMESTAMP + offsets[4]);
+    }
+}
+
+/*
+    invariantSumAmtDeltaIsZero as an inductive step, from any receiver state where it holds: the
+    receiver's amtDeltas are symbolic in the five cycles around now (three finished cycles still to
+    receive, the current one and the next), sum to zero, are zero everywhere else, and the running
+    amount of every finished cycle is non-negative. One receive (any maxCycles) or one squeeze (any
+    rate and maxEnd of the sender's only history entry, set in the current cycle) keeps the sum at
+    zero and touches no other cycle. Time is fixed at START_TIMESTAMP; the deltas bound everything
+    else, so the cycles involved are concrete.
+*/
+contract ProveAmtDeltasInductive is EchidnaStart, Test {
+    uint32 constant CYCLE = 10;
+    uint32 constant NOW_CYCLE = START_TIMESTAMP / CYCLE + 1; // _cycleOf(START_TIMESTAMP)
+    uint32 constant FIRST = NOW_CYCLE - 3;
+    uint32 constant LAST = NOW_CYCLE + 1;
+
+    AmtDeltaHarness h;
+
+    function setUp() public {
+        h = new AmtDeltaHarness();
+    }
+
+    function _state(int128[10] memory d) internal {
+        vm.warp(START_TIMESTAMP); // echidna's symbolic transaction may come later than setUp
+        int256 sum;
+        int256 running;
+        // unchecked: the values are int96, so the sums cannot overflow
+        unchecked {
+            for (uint32 i = 0; i < 5; i++) {
+                // bounded by truncation, not require: every require is a branch, and 20 of them
+                // use up the exploration depth before the receive runs
+                d[2 * i] = int96(d[2 * i]);
+                d[2 * i + 1] = int96(d[2 * i + 1]);
+                sum += int256(d[2 * i]) + d[2 * i + 1];
+                if (i < 3) {
+                    running += d[2 * i];
+                    require(running >= 0);
+                    running += d[2 * i + 1];
+                }
+            }
+        }
+        require(sum == 0);
+        h.setReceiver(FIRST, FIRST, d);
+    }
+
+    function _assertSumZero(uint32 other) internal view {
+        assert(h.deltaSum(FIRST, LAST) == 0);
+        require(other < FIRST || other > LAST);
+        (int128 t, int128 n) = h.delta(other);
+        assert(t == 0 && n == 0);
+    }
+
+    function prove_amt_delta_inductive_receive(int128[10] memory d, uint32 maxCycles, uint32 other) public {
+        _state(d);
+        h.receiveSome(maxCycles);
+        _assertSumZero(other);
+    }
+
+    function prove_amt_delta_inductive_squeeze(int128[10] memory d, uint160 rate, uint32 maxEnd, uint32 other) public {
+        _state(d);
+        require(rate >= 1e8 && rate <= 2 ** 100); // _minAmtPerSec for 10-second cycles
+        StreamReceiver[] memory streams = new StreamReceiver[](1);
+        streams[0] = StreamReceiver(42, StreamConfigImpl.create(0, rate, 0, 0));
+        uint32 updateTime = START_TIMESTAMP / CYCLE * CYCLE; // the start of the current cycle
+        h.setSenderHistory(streams, updateTime, maxEnd);
+        StreamsHistory[] memory history = new StreamsHistory[](1);
+        history[0] = StreamsHistory(bytes32(0), streams, updateTime, maxEnd);
+        h.squeeze(history);
+        _assertSumZero(other);
+    }
+}
+
+/*
+    The exact effect of a receive on the receiver's amtDeltas, from any state: the deltas of the
+    five cycles around now are arbitrary int128 values. A receive of up to maxCycles of the three
+    finished cycles zeroes the k = min(maxCycles, 3) received cycles, adds their running total to
+    thisCycle of the first cycle not received, moves nextReceivableCycle by k and changes nothing
+    else. The total is computed here in the same order and with the same wrapping as Drips, so
+    the solver compares equal terms instead of regrouped sums. invariantSumAmtDeltaIsZero follows:
+    the received deltas are removed and their total is added back in one cycle.
+*/
+contract ProveAmtDeltasReceive is EchidnaStart, Test {
+    uint32 constant CYCLE = 10;
+    uint32 constant NOW_CYCLE = START_TIMESTAMP / CYCLE + 1; // _cycleOf(START_TIMESTAMP)
+    uint32 constant FIRST = NOW_CYCLE - 3;
+
+    AmtDeltaHarness h;
+
+    function setUp() public {
+        h = new AmtDeltaHarness();
+    }
+
+    function prove_amt_delta_receive_effect(int128[10] memory d, uint32 maxCycles, uint32 other) public {
+        vm.warp(START_TIMESTAMP); // echidna's symbolic transaction may come later than setUp
+        h.setReceiver(FIRST, FIRST, d);
+        h.receiveSome(maxCycles);
+
+        // the expected deltas, written out without loops: hevm stops at loops over symbolic bounds
+        int128[10] memory e = [d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9]];
+        uint32 k = maxCycles < 3 ? maxCycles : 3;
+        unchecked {
+            int128 total = d[0];
+            total += d[1];
+            if (k >= 1) {
+                (e[0], e[1]) = (0, 0);
+                if (k == 1) e[2] = d[2] + total;
+            }
+            total += d[2];
+            total += d[3];
+            if (k >= 2) {
+                (e[2], e[3]) = (0, 0);
+                if (k == 2) e[4] = d[4] + total;
+            }
+            total += d[4];
+            total += d[5];
+            if (k == 3) {
+                (e[4], e[5]) = (0, 0);
+                e[6] = d[6] + total;
+            }
+        }
+        (uint32 next, int128[10] memory got) = h.receiverState(FIRST);
+        assert(next == FIRST + k);
+        assert(got[0] == e[0] && got[1] == e[1] && got[2] == e[2] && got[3] == e[3] && got[4] == e[4]);
+        assert(got[5] == e[5] && got[6] == e[6] && got[7] == e[7] && got[8] == e[8] && got[9] == e[9]);
+        require(other < FIRST || other > FIRST + 4);
+        (int128 t, int128 n) = h.delta(other);
+        assert(t == 0 && n == 0);
     }
 }

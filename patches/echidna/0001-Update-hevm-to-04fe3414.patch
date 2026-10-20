@@ -1,0 +1,46 @@
+From 3769e19dbd1e27e193272ea55bcfee546a37685f Mon Sep 17 00:00:00 2001
+From: Gustavo Grieco <gustavo.grieco@gmail.com>
+Date: Tue, 20 Oct 2026 09:30:50 +0000
+Subject: [PATCH] Update hevm to 04fe3414
+
+Brings in hash-consing during exploration (#1085, on by default, with the fixes in #1107
+and #1134), simplification of reads of Solidity-packed storage fields (#1114), and the SMT
+buffer equality fix (#1204).
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ flake.nix  | 4 ++--
+ stack.yaml | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/flake.nix b/flake.nix
+index a4a4ed9..53ab931 100644
+--- a/flake.nix
++++ b/flake.nix
+@@ -119,8 +119,8 @@
+           (pkgs.haskellPackages.callCabal2nix "hevm" (pkgs.fetchFromGitHub {
+             owner = "argotorg";
+             repo = "hevm";
+-            rev = "b36def2111d4edc60107ea5753d7b51ce30b4249";
+-            sha256 = "sha256-4aW+UFu7o69z1z7N5qRnDekyTXwH+LC5sdFuxhr5kdk=";
++            rev = "04fe3414892b75824da49d89e1cfe172729da103";
++            sha256 = "sha256-sIsL5s1QTt9QK5xWJsP3EyR+zF0qBQz0+D4GPAk5cmQ=";
+           }) { secp256k1 = pkgs.secp256k1; })
+           ([
+             pkgs.haskell.lib.compose.dontCheck
+diff --git a/stack.yaml b/stack.yaml
+index ddcc96f..0657e82 100644
+--- a/stack.yaml
++++ b/stack.yaml
+@@ -18,7 +18,7 @@ ghc-options:
+ 
+ extra-deps:
+ - git: https://github.com/argotorg/hevm.git
+-  commit: b36def2111d4edc60107ea5753d7b51ce30b4249
++  commit: 04fe3414892b75824da49d89e1cfe172729da103
+ 
+ # Bump tls to >= 2.2.2 for the fix in https://github.com/haskell-tls/hs-tls/pull/515.
+ # tls 2.2.2 needs the crypton-x509 1.8 line, which migrated from asn1-*/pem/hourglass to
+-- 
+2.43.0
+

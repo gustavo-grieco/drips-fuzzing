@@ -1,0 +1,75 @@
+From 1260600397e022ae2bbae027a6aac7c70ef3c713 Mon Sep 17 00:00:00 2001
+From: gustavo-grieco <gustavo.grieco+github@gmail.com>
+Date: Tue, 20 Oct 2026 09:31:34 +0000
+Subject: [PATCH] Simplify reads of the lowest Solidity-packed storage field
+
+#1114 rewrites reads of packed fields that shift or divide the word first. The field at
+offset 0 is read with a mask alone, And (Lit m) (Or ...), which #1114 does not match, so
+reads of the low field of a packed slot (Drips' splittable/collectable pair, for instance)
+kept the whole Or. Rewrite them with packedField at offset 0, but only when the mask hides a
+whole part of the Or, so the result always gets smaller: an Or of plain values is left as is.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ src/EVM/Expr.hs            |  8 ++++++++
+ test/EVM/Expr/ExprTests.hs | 25 +++++++++++++++++++++++++
+ 2 files changed, 33 insertions(+)
+
+diff --git a/src/EVM/Expr.hs b/src/EVM/Expr.hs
+index f76c533d..3a0f1ba3 100644
+--- a/src/EVM/Expr.hs
++++ b/src/EVM/Expr.hs
+@@ -1636,6 +1636,14 @@ simplifyNoLitToKeccak e = untilFixpoint (mapExprShared (static (HC.Rewrite go)))
+       | Just k <- log2W d, Just r <- packedField m k x = r
+     go (And (Lit m) (SHR (Lit k) x))
+       | k < 256, Just r <- packedField m (unsafeInto k) x = r
++    -- The lowest field is read with a mask alone. Only rewrite when the mask hides a whole part of
++    -- the Or, so the result is smaller: distributing the mask over an Or of plain values is not.
++    go (And (Lit m) x@(Or _ _))
++      | any hidden (orTerms x), Just r <- packedField m 0 x = r
++      where
++        hidden t = packedField m 0 t == Just (Lit 0)
++        orTerms (Or a b) = orTerms a <> orTerms b
++        orTerms t = [t]
+ 
+     -- Masking as as per Solidity bit-packing of e.g. function parameters
+     go (And (Lit mask1) (Or (And (Lit mask2) _) x)) | (mask1 .&. mask2 == 0)
+diff --git a/test/EVM/Expr/ExprTests.hs b/test/EVM/Expr/ExprTests.hs
+index fb3a0099..7e3e3fb9 100644
+--- a/test/EVM/Expr/ExprTests.hs
++++ b/test/EVM/Expr/ExprTests.hs
+@@ -1115,6 +1115,31 @@ basicSimplificationTests = testGroup "Basic simplification tests"
+                else checkSatWith (equivConfig {abstractArith = False}) (full ./= simp)
+         pure $ counterexample ("simplified: " <> show simp <> "\nresult: " <> show res) $
+           classify (full /= simp) "rewritten" (isQed res)
++  , testCase "simp-packed-field-offset-zero" $ do
++      -- two uint128 fields in one slot, as in Drips' Splits balances: the low field is read
++      -- with a mask alone, no shift
++      let m128 = (1 `shiftL` 128) - 1
++          low = And (Lit m128) (Var "low")
++          high = And (Lit m128) (Var "high")
++      assertEqual "SHL packing" low (Expr.simplify (And (Lit m128) (Or low (SHL (Lit 128) high))))
++      assertEqual "Mul packing" low (Expr.simplify (And (Lit m128) (Or (Mul (Lit (1 `shiftL` 128)) high) low)))
++      -- read after a write of the upper field over an older word
++      let clearHi = m128
++          written = Or (SHL (Lit 128) high) (And (Lit clearHi) (Var "old"))
++      assertEqual "after upper write" (And (Lit m128) (Var "old")) (Expr.simplify (And (Lit m128) written))
++  , testCase "simp-packed-field-offset-zero-no-distribution" $ do
++      -- nothing hidden by the mask: left alone instead of distributing the mask over the Or
++      let e = And (Lit 0xff) (Or (Var "a") (Var "b"))
++      assertEqual "unchanged" e (Expr.simplify e)
++  , testProperty "simp-packed-field-offset-zero-equivalence" $ withMaxSuccess 300 $ forAll genPackedFieldWord $ \w ->
++      forAll (elements [1, 8, 32, 64, 128, 255, 256]) $ \n -> ioProperty $ do
++        let mask = (1 `shiftL` n) - 1 :: W256
++            full = And (Lit mask) w
++            simp = Expr.simplify full
++        res <- if full == simp then pure Qed
++               else checkSatWith (equivConfig {abstractArith = False}) (full ./= simp)
++        pure $ counterexample ("simplified: " <> show simp <> "\nresult: " <> show res) $
++          classify (full /= simp) "rewritten" (isQed res)
+   ]
+ 
+ propSimplificationTests :: TestTree
+-- 
+2.43.0
+

@@ -1,0 +1,47 @@
+From 2d534717045a3bfa604ccca5a510d6bb95b3b521 Mon Sep 17 00:00:00 2001
+From: gustavo-grieco <gustavo.grieco+github@gmail.com>
+Date: Tue, 20 Oct 2026 09:31:34 +0000
+Subject: [PATCH] Split an exponent chosen between two constants
+
+Solidity writes an element of a packed array (uint32[] etc.) at 256 ** offset, and when the
+element index depends on a condition the offset is ITE c (Lit x) (Lit y). SMT cannot encode
+a symbolic exponent, so the query failed with "Cannot encode symbolic exponent". With a
+literal base, rewrite to ITE c (base ** x) (base ** y), which folds to two constants.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ src/EVM/Expr.hs            | 3 +++
+ test/EVM/Expr/ExprTests.hs | 3 +++
+ 2 files changed, 6 insertions(+)
+
+diff --git a/src/EVM/Expr.hs b/src/EVM/Expr.hs
+index f76c533d..40a92b31 100644
+--- a/src/EVM/Expr.hs
++++ b/src/EVM/Expr.hs
+@@ -1911,6 +1911,9 @@ simplifyNoLitToKeccak e = untilFixpoint (mapExprShared (static (HC.Rewrite go)))
+       | a < 32 && m < 32 && a * m < 32 = shl (mul (Lit 8) offset) (Lit 1)
+     go (Exp (Lit 0x100) offset@(And (Lit m) _)) | m < 32 = shl (mul (Lit 8) offset) (Lit 1)
+     go (Exp (Lit 2) k) = shl k (Lit 1)
++    -- an exponent picked between two constants (a packed array element's offset) splits into two
++    -- concrete powers, which SMT can encode
++    go (Exp a@(Lit _) (ITE c x@(Lit _) y@(Lit _))) = ITE c (EVM.Expr.exp a x) (EVM.Expr.exp a y)
+     go (Exp a b) = EVM.Expr.exp a b
+ 
+     go (Div (Div x (Lit a)) (Lit b))
+diff --git a/test/EVM/Expr/ExprTests.hs b/test/EVM/Expr/ExprTests.hs
+index fb3a0099..277f782f 100644
+--- a/test/EVM/Expr/ExprTests.hs
++++ b/test/EVM/Expr/ExprTests.hs
+@@ -1040,6 +1040,9 @@ basicSimplificationTests = testGroup "Basic simplification tests"
+         a = successPath [PEq (Add (Lit 1) (Lit 2)) (Sub (Lit 4) (Lit 1))]
+         b = Expr.simplify a
+       assertEqual "Must simplify down" (successPath []) b
++  , testCase "simp-exp-ite-lits" $ do
++      let e = Exp (Lit 0x100) (ITE (Var "c") (Lit 0x1c) (Lit 4))
++      assertEqual "split" (ITE (Var "c") (Lit (0x100 ^ (0x1c :: Int))) (Lit 0x100000000)) (Expr.simplify e)
+   , testCase "simp-mul-neg1" $ do
+       let simp = Expr.simplify $ Mul (Lit Expr.maxLit) (Var "x")
+       assertEqual "mul by -1 is negation" (Sub (Lit 0) (Var "x")) simp
+-- 
+2.43.0
+

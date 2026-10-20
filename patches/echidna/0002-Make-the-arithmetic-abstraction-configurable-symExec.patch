@@ -1,0 +1,122 @@
+From 7410f7f535309dd6b2c19e8aa175bf4aee9fa36d Mon Sep 17 00:00:00 2001
+From: Gustavo Grieco <gustavo.grieco@gmail.com>
+Date: Tue, 20 Oct 2026 09:30:24 +0000
+Subject: [PATCH] Make the arithmetic abstraction configurable
+ (symExecAbstractArith)
+
+hevm's abstractArith was hard-coded on. Some properties only verify with it off (the solver
+has to see the real multiplication and division), and others only with it on, so expose it
+as the symExecAbstractArith option, defaulting to true as before.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ lib/Echidna/Config.hs               | 1 +
+ lib/Echidna/SymExec/Common.hs       | 4 ----
+ lib/Echidna/SymExec/Exploration.hs  | 4 ++--
+ lib/Echidna/SymExec/Verification.hs | 4 ++--
+ lib/Echidna/Types/Campaign.hs       | 3 +++
+ tests/solidity/basic/default.yaml   | 3 +++
+ 6 files changed, 11 insertions(+), 8 deletions(-)
+
+diff --git a/lib/Echidna/Config.hs b/lib/Echidna/Config.hs
+index 34d7f3e..01b3a3d 100644
+--- a/lib/Echidna/Config.hs
++++ b/lib/Echidna/Config.hs
+@@ -137,6 +137,7 @@ instance FromJSON EConfigWithUsage where
+         <*> v ..:? "symExecMaxIters"    ..!= defaultSymExecMaxIters
+         <*> v ..:? "symExecAskSMTIters" ..!= defaultSymExecAskSMTIters
+         <*> v ..:? "symExecMaxExplore"  ..!= defaultSymExecMaxExplore
++        <*> v ..:? "symExecAbstractArith" ..!= True
+         where
+         smtSolver = v ..:? "symExecSMTSolver" >>= \case
+           Just ("z3" :: String)  -> pure Z3
+diff --git a/lib/Echidna/SymExec/Common.hs b/lib/Echidna/SymExec/Common.hs
+index 07d7674..b59dd69 100644
+--- a/lib/Echidna/SymExec/Common.hs
++++ b/lib/Echidna/SymExec/Common.hs
+@@ -34,10 +34,6 @@ import Echidna.Types.Config (EConfig(..))
+ import Echidna.Types.Solidity (SolConf(..))
+ import Echidna.Types.Tx (Tx(..), TxCall(..), TxConf(..), maxGasPerBlock)
+ 
+--- | Enable hevm's arithmetic abstraction for symbolic exploration and verification.
+-symExecAbstractArith :: Bool
+-symExecAbstractArith = True
+-
+ panicMsg :: Word256 -> ByteString
+ panicMsg err = selector "Panic(uint256)" <> encodeAbiValue (AbiUInt 256 err)
+ 
+diff --git a/lib/Echidna/SymExec/Exploration.hs b/lib/Echidna/SymExec/Exploration.hs
+index 563baee..2736fba 100644
+--- a/lib/Echidna/SymExec/Exploration.hs
++++ b/lib/Echidna/SymExec/Exploration.hs
+@@ -24,7 +24,7 @@ import EVM.SymExec (IterConfig(..), LoopHeuristic (..), VeriOpts(..))
+ import EVM.Types (VMType(..))
+ import qualified EVM.Types (VM(..))
+ 
+-import Echidna.SymExec.Common (suitableForSymExec, exploreMethod, rpcFetcher, symExecAbstractArith, TxOrError(..), PartialsLogs)
++import Echidna.SymExec.Common (suitableForSymExec, exploreMethod, rpcFetcher, TxOrError(..), PartialsLogs)
+ import Echidna.Types.Campaign (CampaignConf(..), WorkerState)
+ import Echidna.Types.Config (Env(..), EConfig(..), OperationMode(..), OutputFormat(..), UIConf(..))
+ import Echidna.Types.Random (rElem)
+@@ -98,7 +98,7 @@ exploreContract contract method vm = do
+   resultChan <- liftIO newEmptyMVar
+   let isNonInteractive = conf.uiConf.operationMode == NonInteractive Text
+   let iterConfig = IterConfig { maxIter = maxIters, askSmtIters = askSmtIters, loopHeuristic = StackBased}
+-  let hevmConfig = defaultConfig { maxWidth = 5, maxDepth = maxExplore, maxBufSize = 12, maxDynSize = 128, promiseNoReent = False, onlyDeployed = True, debug = isNonInteractive, dumpQueries = False, abstractArith = symExecAbstractArith }
++  let hevmConfig = defaultConfig { maxWidth = 5, maxDepth = maxExplore, maxBufSize = 12, maxDynSize = 128, promiseNoReent = False, onlyDeployed = True, debug = isNonInteractive, dumpQueries = False, abstractArith = conf.campaignConf.symExecAbstractArith }
+   let veriOpts = VeriOpts {iterConf = iterConfig, rpcInfo = rpcInfo}
+   let runtimeEnv = defaultEnv { config = hevmConfig }
+   session <- asks (.fetchSession)
+diff --git a/lib/Echidna/SymExec/Verification.hs b/lib/Echidna/SymExec/Verification.hs
+index 7d84dc7..694b66c 100644
+--- a/lib/Echidna/SymExec/Verification.hs
++++ b/lib/Echidna/SymExec/Verification.hs
+@@ -22,7 +22,7 @@ import EVM.SymExec (IterConfig(..), LoopHeuristic (..), VeriOpts(..))
+ import EVM.Types (VMType(..))
+ import qualified EVM.Types (VM(..))
+ 
+-import Echidna.SymExec.Common (rpcFetcher, exploreMethod, suitableForSymExec, symExecAbstractArith, TxOrError(..), PartialsLogs)
++import Echidna.SymExec.Common (rpcFetcher, exploreMethod, suitableForSymExec, TxOrError(..), PartialsLogs)
+ import Echidna.Test (isFoundrySymbolicName)
+ import Echidna.Types.Campaign (CampaignConf(..), WorkerState)
+ import Echidna.Types.Config (Env(..), EConfig(..), OperationMode(..), OutputFormat(..), UIConf(..))
+@@ -68,7 +68,7 @@ verifyMethod method contract vm = do
+   resultChan <- liftIO newEmptyMVar
+   let isNonInteractive = conf.uiConf.operationMode == NonInteractive Text
+   let iterConfig = IterConfig { maxIter = maxIters, askSmtIters = askSmtIters, loopHeuristic = StackBased}
+-  let hevmConfig = defaultConfig { maxWidth = 5, maxDepth = maxExplore, dumpExprs = True, maxBufSize = 12, maxDynSize = 128, promiseNoReent = False, onlyDeployed = True, debug = isNonInteractive, abstractArith = symExecAbstractArith }
++  let hevmConfig = defaultConfig { maxWidth = 5, maxDepth = maxExplore, dumpExprs = True, maxBufSize = 12, maxDynSize = 128, promiseNoReent = False, onlyDeployed = True, debug = isNonInteractive, abstractArith = conf.campaignConf.symExecAbstractArith }
+   let veriOpts = VeriOpts {iterConf = iterConfig, rpcInfo = rpcInfo}
+   let runtimeEnv = defaultEnv { config = hevmConfig }
+   session <- asks (.fetchSession)
+diff --git a/lib/Echidna/Types/Campaign.hs b/lib/Echidna/Types/Campaign.hs
+index 8fc4247..7b3a207 100644
+--- a/lib/Echidna/Types/Campaign.hs
++++ b/lib/Echidna/Types/Campaign.hs
+@@ -173,6 +173,9 @@ data CampaignConf = CampaignConf
+   , symExecMaxExplore :: Integer
+     -- ^ Maximum number of states to explore before we stop exploring it.
+     -- Only relevant if symExec is True
++  , symExecAbstractArith :: Bool
++    -- ^ Abstract symbolic multiplication and division as uninterpreted
++    -- functions with lemmas. Only relevant if symExec is True
+   }
+ 
+ -- | The state of a fuzzing campaign.
+diff --git a/tests/solidity/basic/default.yaml b/tests/solidity/basic/default.yaml
+index f8c5904..3eeff1f 100644
+--- a/tests/solidity/basic/default.yaml
++++ b/tests/solidity/basic/default.yaml
+@@ -127,6 +127,9 @@ symExecTargets: null
+ # List the max number of states to explore when using symbolc execution
+ # only relevant if symExec is true
+ symExecMaxExplore: 10
++# Abstract symbolic multiplication and division as uninterpreted functions with lemmas
++# only relevant if symExec is true
++symExecAbstractArith: true
+ # Select the SMT solver when using symbolic execution. Valid values are: "cvc5", "z3" and "bitwuzla"
+ # only relevant if symExec is true
+ symExecSMTSolver: bitwuzla
+-- 
+2.43.0
+

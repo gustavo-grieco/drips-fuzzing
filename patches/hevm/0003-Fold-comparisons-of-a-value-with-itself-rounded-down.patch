@@ -1,0 +1,71 @@
+From 31a484d5d0ea652113f59655cfb43b4886dd4519 Mon Sep 17 00:00:00 2001
+From: gustavo-grieco <gustavo.grieco+github@gmail.com>
+Date: Tue, 20 Oct 2026 09:31:34 +0000
+Subject: [PATCH] Fold comparisons of a value with itself rounded down
+
+x < x - x % c is never true (x % 0 is 0). Solidity's uintN version masks both sides,
+x = t & m and (t - x % c) & m with m = 2^n - 1, and the masked difference is still
+x - x % c. Drips compares the current timestamp with the start of its cycle this way
+(now < now - now % cycleSecs); left alone, the condition stays symbolic and, through the
+packed array offset it selects, reaches SMT as a symbolic exponent.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ src/EVM/Expr.hs            |  5 +++++
+ test/EVM/Expr/ExprTests.hs | 24 ++++++++++++++++++++++++
+ 2 files changed, 29 insertions(+)
+
+diff --git a/src/EVM/Expr.hs b/src/EVM/Expr.hs
+index f76c533d..bc8e4c89 100644
+--- a/src/EVM/Expr.hs
++++ b/src/EVM/Expr.hs
+@@ -1611,6 +1611,11 @@ simplifyNoLitToKeccak e = untilFixpoint (mapExprShared (static (HC.Rewrite go)))
+     go (EVM.Types.LT (Add (Lit c) a) b) | a == b, c /= 0 = lt (Lit (maxLit - c)) a
+     go (EVM.Types.LT a (Sub b (Lit c))) | a == b, c /= 0 = lt a (Lit c)
+     go (EVM.Types.LT (Sub a (Lit c)) b) | a == b, c /= 0 = iszero (lt a (Lit c))
++    -- rounding down to a multiple never goes above: x - x % c <= x (x % 0 is 0). Solidity's uintN
++    -- version masks both sides: x = t & m, and (t - x % c) & m = x - x % c for m = 2^n - 1
++    go (EVM.Types.LT a (Sub b (Mod a' _))) | a == b, a == a' = Lit 0
++    go (EVM.Types.LT a@(And (Lit m) t) (And (Lit m') (Sub t' (Mod a' _))))
++      | m == m', m .&. (m + 1) == 0, a == a', t == t' || a == t' = Lit 0
+     go (EVM.Types.LT a b) | a == b = Lit 0
+     go (SLT a b) | a == b = Lit 0
+ 
+diff --git a/test/EVM/Expr/ExprTests.hs b/test/EVM/Expr/ExprTests.hs
+index fb3a0099..7dc76793 100644
+--- a/test/EVM/Expr/ExprTests.hs
++++ b/test/EVM/Expr/ExprTests.hs
+@@ -1052,6 +1052,30 @@ basicSimplificationTests = testGroup "Basic simplification tests"
+   , testCase "simp-double-not" $ do
+       let simp = Expr.simplify $ Not (Not (Var "a"))
+       assertEqual "Not should be concretized" (Var "a") simp
++  , testCase "simp-round-down-not-above" $ do
++      -- Solidity's uint32 now < now - now % cycleSecs, from Drips' Streams: never true
++      let m32 = Lit 0xffffffff
++          t = Add (Lit 0x5ae26348) (And m32 (Var "arg1"))
++          now = And m32 t
++          cond start = LT now (And m32 (Sub start (Mod now (Lit 0x93a80))))
++      assertEqual "uint32" (Lit 0) (Expr.simplify (cond t))
++      assertEqual "uint32, masked start" (Lit 0) (Expr.simplify (cond now))
++      assertEqual "uint256" (Lit 0) (Expr.simplify (LT (Var "x") (Sub (Var "x") (Mod (Var "x") (Var "c")))))
++      -- the rule needs a 2^n - 1 mask
++      let m = Lit 0xf0
++          other = LT (And m (Var "t")) (And m (Sub (Var "t") (Mod (And m (Var "t")) (Var "c"))))
++      assertBool "other mask" (Expr.simplify other /= Lit 0)
++  , testProperty "simp-round-down-not-above-equivalence" $ withMaxSuccess 60 $
++      forAll (elements [8, 32, 64, 255, 256]) $ \n -> forAll (elements [0, 1, 7, 0x93a80]) $ \c -> ioProperty $ do
++        let mask = Lit ((1 `shiftL` n) - 1)
++            t = Add (Var "a") (Var "b")
++            now = And mask t
++            full = LT now (And mask (Sub t (Mod now (Lit c))))
++            simp = Expr.simplify full
++        res <- checkSatWith (equivConfig {abstractArith = False}) (full ./= simp)
++        pure $ counterexample ("simplified: " <> show simp <> "\nresult: " <> show res) $
++          -- c = 0, 1 make the modulo 0 first, so the rule has nothing to match
++          (c <= 1 || simp == Lit 0) .&&. isQed res
+   , testCase "keccak-small-literal" $ do
+       let k = Keccak (AbstractBuf "buf")
+       assertEqual "keccak is nonzero" (Lit 0) (Expr.simplify (IsZero k))
+-- 
+2.43.0
+
