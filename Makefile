@@ -15,6 +15,9 @@ export ECHIDNA_HASHCONS ?= 1
 # All of them must be verified. Harnesses in test/symbolic/ that are not listed here (the negative
 # control, MutantStreamSymAcct, ProveBalConservation*, ProveBalanceAtInFuture) hold properties that
 # are expected to fail; they are kept for reference and not run.
+# prove_accounting_split, prove_squeezable_cant_be_withdrawn and prove_squeezable_cant_be_undone
+# need simplifier rules not yet in hevm 0.58 (offset-0 packed fields, and the packed uint32 offset
+# that depends on now < now - now % cycleSecs, which is never true).
 VERIFY := \
 	prove_split_value_conservation:ProveSplits:verify \
 	prove_split_monotonic:ProveSplits:verify-arith \
@@ -88,7 +91,12 @@ VERIFY := \
 	prove_accounting_stream_balance:ProveAccounting:verify \
 	prove_accounting_receive:ProveAccounting:verify \
 	prove_accounting_squeeze:ProveAccounting:verify-arith \
-	prove_accounting_withdraw_fails:ProveAccounting:verify
+	prove_accounting_withdraw_fails:ProveAccounting:verify \
+	prove_squeeze_twice:ProveSqueezeHistory:verify-arith \
+	prove_squeeze_fully_hashed_history:ProveSqueezeHistory:verify-arith \
+	prove_squeezable_cant_be_withdrawn:ProveSqueezeHistory:verify-arith \
+	prove_squeezable_cant_be_undone:ProveSqueezeHistory:verify-arith \
+	prove_squeezable_vs_received:ProveSqueezeHistory:verify-arith
 
 # Per-property settings on top of the config: harder SMT queries (symbolic account keys, the full
 # deployment) get a longer solver timeout, and the N=3 splits run fewer solvers to fit in memory.
